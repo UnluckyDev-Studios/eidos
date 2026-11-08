@@ -8,10 +8,13 @@
 #include <string.h>
 
 #include "settings.h"
+#include "link.h"
 #include "mod_menu.h"
 #include "mod_net.h"
 #include "mod_title.h"
 #include "mp.h"
+#include "session_trade.h"
+#include "session_trade_link.h"
 #include "ui_lang.h"            /* labels joined with a value are translated in parts */
 
 /*
@@ -175,6 +178,8 @@ static const char *const k_option_help[EIDOS_OPT_COUNT][2] = {
 #define HELP_NET_CPORT2  "A: type"
 #define HELP_NET_NAME1   "Your name."
 #define HELP_NET_NAME2   "A: change"
+#define HELP_NET_TRADE1 "Trade one Pokemon with the other"
+#define HELP_NET_TRADE2 "player. Not a DS wireless trade."
 #define HELP_NET_DEFAULTS1 "Reset this page."
 #define HELP_NET_DEFAULTS2 ""
 #define HELP_TEXT_EDIT1  "Type on the keyboard."
@@ -319,6 +324,7 @@ static const ValueName k_choice_names[] = {
 #define STR_NONE        "(none)"
 
 /* The Session section's own labels. */
+#define STR_NET_TRADE        "Session trade"
 #define STR_SESSION_CODE     "Code"
 #define STR_MP_START         "Start game"
 #define STR_MP_READY         "Ready"
@@ -410,6 +416,8 @@ enum {
     ROW_NET_NAME,         /* the player's name (text)                    */
     ROW_INJECT_MAX,       /* the longest press the injection allows     */
     ROW_NET_DEFAULTS,     /* the network settings back to their default  */
+    ROW_NET_TRADE,        /* open the session trade, private Link only   */
+    ROW_STRADE,           /* one row of the session trade list           */
     ROW_SESSION_CODE,     /* the code in force (read only)               */
     ROW_SESSION_JOINCODE, /* the code the player types to join with      */
     ROW_SESSION_HOST,     /* start a session                             */
@@ -519,7 +527,28 @@ static void build_net_rows(void)
     add_row(ROW_NET_RELAY_PORT, 0, 0);
     add_row(ROW_NET_CONTROL_PORT, 0, 0);
     add_row(ROW_INJECT_MAX, 0, 0);
+    if (bw_session_trade_link_available()) {
+        add_row(ROW_NET_TRADE, 0, 0);
+    }
     add_row(ROW_NET_DEFAULTS, 0, 0);
+}
+
+/* The session trade's own list.  The rows are the trade module's. */
+static int g_trade_view;
+static u32 g_trade_stamp;
+
+static void build_trade_rows(void)
+{
+    BwSessionTrade *t = bw_session_trade_link_engine();
+    int n, i;
+
+    bw_session_trade_ui_bind(t);
+    g.nrows = 0;
+    n = bw_session_trade_ui_rows();
+    for (i = 0; i < n; i++) {
+        add_row(ROW_STRADE, i, 0);
+    }
+    g_trade_stamp = t != NULL ? bw_session_trade_stamp(t) : 0u;
 }
 
 /*
@@ -1562,6 +1591,20 @@ int eidos_sui_input(unsigned pressed, unsigned held)
     if (poll_session()) {
         res |= EIDOS_SUI_REDRAW;
     }
+    if (g_trade_view) {
+        BwSessionTrade *t = bw_session_trade_link_engine();
+        u32 stamp = t != NULL ? bw_session_trade_stamp(t) : 0u;
+
+        if (stamp != g_trade_stamp) {
+            int cursor = g.cursor;
+
+            build_trade_rows();
+            if (cursor >= 0 && cursor < g.nrows) {
+                g.cursor = cursor;
+            }
+            res |= EIDOS_SUI_REDRAW;
+        }
+    }
     /* The game has started: the screen closes and the title menu goes
      * straight into the game (sdk/mod_title.h). */
     if (bw_mp_started_pending()) {
@@ -1613,6 +1656,13 @@ static int sui_input(unsigned pressed, unsigned held)
     }
 
     act = repeat_dirs(pressed, held);
+    if (g_trade_view && (pressed & 2u)) {
+        g_trade_view = 0;
+        build_rows();
+        g.cursor = 0;
+        g.scroll = 0;
+        return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_BACK;
+    }
     if (pressed & 2u) {
         if (g.tab == TAB_SESSION && g_mp_view != MP_VIEW_CHOOSE &&
             !mp_in_game() && !g_sess.busy) {
@@ -1636,6 +1686,8 @@ static int sui_input(unsigned pressed, unsigned held)
     if ((pressed & 0x300u) && !g_mp_only) {
         /* L and R: the tab before or after */
         int d = (pressed & 0x100u) ? 1 : -1;
+
+        g_trade_view = 0;
 
         enter_section((g.tab + d + TAB_STRIP) % TAB_STRIP);
         return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_MOVE;
@@ -1765,6 +1817,19 @@ static int sui_input(unsigned pressed, unsigned held)
                    (g_copied ? EIDOS_SUI_SFX_SELECT : EIDOS_SUI_SFX_BACK);
         }
         return 0;
+    }
+    if (r->type == ROW_STRADE) {
+        int rc = bw_session_trade_ui_activate(r->arg);
+
+        build_trade_rows();
+        return EIDOS_SUI_REDRAW | (rc == 0 ? EIDOS_SUI_SFX_SELECT : EIDOS_SUI_SFX_BACK);
+    }
+    if (r->type == ROW_NET_TRADE) {
+        g_trade_view = 1;
+        build_trade_rows();
+        g.cursor = 0;
+        g.scroll = 0;
+        return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
     }
     if (r->type == ROW_SESSION_HOST || r->type == ROW_SESSION_JOIN ||
         r->type == ROW_SESSION_LEAVE || r->type == ROW_SESSION_REVERT ||
@@ -2138,6 +2203,23 @@ int eidos_sui_touch(int row, int zone)
             return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
         }
         break;
+    case ROW_NET_TRADE:
+        if (was) {
+            g_trade_view = 1;
+            build_trade_rows();
+            g.cursor = 0;
+            g.scroll = 0;
+            return EIDOS_SUI_REDRAW | EIDOS_SUI_SFX_SELECT;
+        }
+        break;
+    case ROW_STRADE:
+        if (was) {
+            int rc = bw_session_trade_ui_activate(r->arg);
+
+            build_trade_rows();
+            return EIDOS_SUI_REDRAW | (rc == 0 ? EIDOS_SUI_SFX_SELECT : EIDOS_SUI_SFX_BACK);
+        }
+        break;
     default:
         break;
     }
@@ -2352,6 +2434,13 @@ void eidos_sui_row_text(int row, char *label, int nl, char *value, int nv)
     case ROW_NET_RELAY:
         put(label, nl, STR_NET_RELAY);
         put(value, nv, net_text(eidos_settings_net_relay()));
+        break;
+    case ROW_NET_TRADE:
+        put(label, nl, STR_NET_TRADE);
+        put(value, nv, "");
+        break;
+    case ROW_STRADE:
+        bw_session_trade_ui_row(r->arg, label, nl, value, nv);
         break;
     case ROW_NET_RELAY_PORT:
         put(label, nl, STR_NET_RPORT);
@@ -2667,6 +2756,12 @@ void eidos_sui_help_line(int i, char *out, int n)
         case ROW_NET_DEFAULTS:
             l[0] = HELP_NET_DEFAULTS1;
             l[1] = HELP_NET_DEFAULTS2;
+            break;
+        case ROW_NET_TRADE:
+        case ROW_STRADE:
+            l[0] = HELP_NET_TRADE1;
+            l[1] = HELP_NET_TRADE2;
+            l[2] = bw_session_trade_ui_help();
             break;
         case ROW_SESSION_CODE:
             l[0] = HELP_SESSION_CODE1;

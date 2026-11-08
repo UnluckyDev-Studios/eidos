@@ -3,6 +3,11 @@
 Each release's notes on GitHub start with its section here
 (tools/release_notes.py). Newest first.
 
+## Unreleased
+
+### Link
+- **Session trade:** On a private Link session, two players can offer one party Pokemon each, inspect the partner's record, and both confirm those exact bytes before either save changes. This is not a DS Union Room trade. A dropped connection before the save leaves the party alone; a save that already finished is not rolled back. See `docs/session-trade.md`.
+
 ## 0.2.4
 
 ### Engine & Performance

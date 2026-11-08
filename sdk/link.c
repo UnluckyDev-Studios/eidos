@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "link.h"
+#include "session_trade_link.h"
 #include "arm7/wm.h"
 #include "dsmem.h"
 #include "firmware.h"
@@ -328,6 +329,7 @@ static void radio_on(void)
     bw_link_mac(mac);
     memcpy(bw_ds_ptr(BW_FW_MAC_ADDR), mac, 6);
     bw_mod_net_set_link_handler(on_link);
+    bw_session_trade_link_attach();
     bw_arm7_wm_set_air(&k_air);
     g_link.state = BW_LINK_OPEN;
     g_link.was_active = 1;
@@ -337,6 +339,7 @@ static void radio_on(void)
 static void radio_off(void)
 {
     bw_arm7_wm_set_air(NULL);
+    bw_session_trade_link_detach();
     bw_mod_net_set_link_handler(NULL);
     lock();
     g_link.q_count = 0;
@@ -408,6 +411,7 @@ void bw_link_leave(void)
 
 void bw_link_frame(void)
 {
+    bw_session_trade_link_frame();
     if (g_link.air_installed && g_link.state != BW_LINK_OPEN) {
         if (g_link.air_up && !bw_mod_net_session_active()) {
             g_link.air_up = 0;         /* the relay dropped us: try again    */

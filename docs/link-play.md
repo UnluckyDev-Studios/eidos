@@ -4,8 +4,14 @@ Status (2026-11-02): the radio works at the WM level. `sdk/arm7/wm.c`
 answers the game's own WM library as the ARM7 firmware does, and
 `sdk/link.c` carries its frames over metaxy while a Link session is open.
 With two eidos in one session, the C-Gear turns on, scans, and shows the
-other player ("C-Gear Detected: YES" in its Wireless app). A full trade or
-battle between two players is not checked yet.
+other player ("C-Gear Detected: YES" in its Wireless app). A Union Room
+trade or battle over that radio is not checked, and this file does not
+claim one.
+
+A private Link session (a code, `bw_link_host` / `bw_link_join`) can trade
+one Pokemon by a separate session protocol, not by the DS radio. That
+trade, its confirmations and its limits are `docs/session-trade.md`. The
+public air is not a trade room.
 
 The DS's local wireless features (trades and battles in the Union Room, the
 Entralink with friends, Battle Subway with a friend, the Musical with
