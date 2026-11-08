@@ -1009,13 +1009,133 @@ static int test_confirm_and_empty(void)
     return 0;
 }
 
+static int test_names_and_close(void)
+{
+    char line[80];
+    u16 nick[4];
+    u8 mon[MON], copy[MON], logical[0x80], party[0x54];
+    BwTradeInspect info;
+    Party pa, pb;
+    Pipe ab, ba;
+    BwSessionTrade *a, *b;
+    const char *ja = "/tmp/eidos-trade-nm-a/journal.bin";
+    const char *jb = "/tmp/eidos-trade-nm-b/journal.bin";
+    u32 iv;
+
+    printf("names and close\n");
+    nick[0] = 'F';
+    nick[1] = 'l';
+    nick[2] = 0x00E4;
+    nick[3] = 0xFFFF;
+    BW_CHECK_EQ("german name",
+                bw_session_trade_format_label(6, "Glurak", 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Glurak") == 0, 1);
+    BW_CHECK_EQ("umlaut kept",
+                bw_session_trade_format_label(4, "Glumanda\xC3\xA4", 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Glumanda\xC3\xA4") == 0, 1);
+    BW_CHECK_EQ("nick beside species",
+                bw_session_trade_format_label(6, "Glurak", 1, nick, 3, line, 80) == 0 &&
+                strcmp(line, "Fl\xC3\xA4 (Glurak)") == 0, 1);
+    BW_CHECK_EQ("missing text",
+                bw_session_trade_format_label(25, NULL, 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Unbekannt") == 0, 1);
+    BW_CHECK_EQ("empty text",
+                bw_session_trade_format_label(25, "", 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Unbekannt") == 0, 1);
+    BW_CHECK_EQ("corrupt text",
+                bw_session_trade_format_label(25, "Glur\xFF" "ak", 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Unbekannt") == 0, 1);
+    BW_CHECK_EQ("overlong",
+                bw_session_trade_format_label(25, "\xC0\x80x", 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Unbekannt") == 0, 1);
+    BW_CHECK_EQ("species 0",
+                bw_session_trade_format_label(0, "Foo", 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Unbekannt") == 0, 1);
+    BW_CHECK_EQ("species 649",
+                bw_session_trade_format_label(649, "Art649", 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Art649") == 0, 1);
+    BW_CHECK_EQ("species 650",
+                bw_session_trade_format_label(650, "Nein", 0, NULL, 0, line, 80) == 0 &&
+                strcmp(line, "Unbekannt") == 0, 1);
+    nick[0] = 0xD800;
+    BW_CHECK_EQ("bad nick dropped",
+                bw_session_trade_format_label(6, "Glurak", 1, nick, 1, line, 80) == 0 &&
+                strcmp(line, "Glurak") == 0, 1);
+
+    memset(logical, 0, sizeof logical);
+    memset(party, 0, sizeof party);
+    party[0x1B] = 0xFF;
+    wr16(logical, 6);
+    iv = (15u) | (15u << 5) | (15u << 10) | (15u << 15) | (15u << 20) | (15u << 25);
+    iv |= 1u << 31;
+    wr32(logical + 0x20 + 16, iv);
+    wr16(logical + 0x40, 'A');
+    wr16(logical + 0x42, 'x');
+    wr16(logical + 0x44, 0xFFFF);
+    party[4] = 12;
+    BW_REQUIRE("encode nick", bw_session_trade_encode(mon, 0x1111u, logical, party) == 0);
+    memcpy(copy, mon, MON);
+    bw_session_trade_predict(mon, NULL, NULL, NULL, 0, NULL, NULL, &info);
+    BW_CHECK_EQ("record unchanged", memcmp(mon, copy, MON) == 0, 1);
+    BW_CHECK_EQ("nick bit", info.has_nick, 1);
+    BW_CHECK_EQ("nick units", info.nick_n == 2 && info.nick[0] == 'A' && info.nick[1] == 'x', 1);
+    BW_CHECK_EQ("label from record",
+                bw_session_trade_format_label(info.species, "Glurak", info.has_nick,
+                                             info.nick, info.nick_n, line, 80) == 0 &&
+                strcmp(line, "Ax (Glurak)") == 0, 1);
+
+    rm_journal(ja);
+    rm_journal(jb);
+    party_init(&pa, 25, 1);
+    party_init(&pb, 133, 4);
+    a = open_peer(&pa, &ab, 1, 41, ja, NULL, 0, 1, 0);
+    b = open_peer(&pb, &ba, 2, 42, jb, NULL, 0, 1, 0);
+    bind_pipes(&ab, &ba, a, b);
+    BW_CHECK_EQ("idle view closed", bw_session_trade_view_open(a), 0);
+    BW_REQUIRE("open names", trade_open(a, b, &ab, &ba) == 0);
+    BW_CHECK_EQ("talk stays up", bw_session_trade_view_open(a), 1);
+    BW_CHECK_EQ("no success yet", bw_session_trade_success_ready(a), 0);
+    BW_CHECK_EQ("dismiss refused", bw_session_trade_dismiss_success(a), -1);
+    BW_CHECK_EQ("offer names", bw_session_trade_offer(a, 0) == 0 && bw_session_trade_offer(b, 0) == 0, 1);
+    pipe_flush(&ab);
+    pipe_flush(&ba);
+    BW_CHECK_EQ("conf names", bw_session_trade_confirm(a) == 0 && bw_session_trade_confirm(b) == 0, 1);
+    pa.delay = 1;
+    pb.delay = 8;
+    pump(a, b, &ab, &ba, 6);
+    BW_CHECK_EQ("one side saved stays", bw_session_trade_phase(a) == BW_STRADE_SAVED ||
+                bw_session_trade_phase(b) == BW_STRADE_SAVED, 1);
+    BW_CHECK_EQ("not both yet", bw_session_trade_success_ready(a) == 0 ||
+                bw_session_trade_success_ready(b) == 0, 1);
+    if (bw_session_trade_phase(a) == BW_STRADE_SAVED) {
+        BW_CHECK_EQ("dismiss one side", bw_session_trade_dismiss_success(a), -1);
+        BW_CHECK_EQ("still saved", bw_session_trade_phase(a), BW_STRADE_SAVED);
+        bw_session_trade_on_disconnect(a);
+        BW_CHECK_EQ("unresolved stays", bw_session_trade_phase(a), BW_STRADE_UNRESOLVED);
+        BW_CHECK_EQ("no auto ack", bw_session_trade_dismiss_success(a), -1);
+        BW_CHECK_EQ("journal still open", bw_session_trade_view_open(a), 1);
+    }
+    pump(a, b, &ab, &ba, 12);
+    if (bw_session_trade_success_ready(b)) {
+        BW_CHECK_EQ("view until dismiss", bw_session_trade_view_open(b), 1);
+        BW_CHECK_EQ("dismiss both", bw_session_trade_dismiss_success(b), 0);
+        BW_CHECK_EQ("view gone", bw_session_trade_view_open(b), 0);
+        BW_CHECK_EQ("dismiss twice", bw_session_trade_dismiss_success(b), -1);
+        BW_CHECK_EQ("still idle", bw_session_trade_phase(b), BW_STRADE_IDLE);
+    }
+    bw_session_trade_destroy(a);
+    bw_session_trade_destroy(b);
+    return 0;
+}
+
 int main(void)
 {
 #if !defined(_WIN32)
     (void)system("mkdir -p /tmp/eidos-trade-a /tmp/eidos-trade-b /tmp/eidos-trade-evo-a "
                  "/tmp/eidos-trade-evo-b /tmp/eidos-trade-can-a /tmp/eidos-trade-can-b "
                  "/tmp/eidos-trade-bad-a /tmp/eidos-trade-bad-b /tmp/eidos-trade-rec-a "
-                 "/tmp/eidos-trade-rec-b /tmp/eidos-trade-cf-a /tmp/eidos-trade-cf-b");
+                 "/tmp/eidos-trade-rec-b /tmp/eidos-trade-cf-a /tmp/eidos-trade-cf-b "
+                 "/tmp/eidos-trade-nm-a /tmp/eidos-trade-nm-b");
 #else
     (void)_mkdir("/tmp");
 #endif
@@ -1027,6 +1147,7 @@ int main(void)
     test_recovery();
     test_narc_and_pair();
     test_confirm_and_empty();
+    test_names_and_close();
     BW_REPORT("test_session_trade");
     return bw_failures == 0 ? 0 : 1;
 }

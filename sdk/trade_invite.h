@@ -80,8 +80,14 @@ u32         bw_trade_invite_peer(const BwTradeInvite *t);
 /* German prompt, or NULL when there is nothing to answer. */
 const char *bw_trade_invite_prompt(const BwTradeInvite *t);
 const char *bw_trade_invite_status(const BwTradeInvite *t);
-/* 1 after both agreed, until the trade screen has been shown. */
+/* 1 after both agreed, until the trade picture is released. */
 int         bw_trade_invite_wants_trade_screen(const BwTradeInvite *t);
+/* The trade picture is finished.  Only leaves the "entered" state, and
+ * sends nothing.  0, or -1 when this side is not in that state. */
+int         bw_trade_invite_release(BwTradeInvite *t);
+/* After a release, a held A must not count as a new press.  Returns the
+ * hold for the next sample: 1 while `hold` is set and A is still down. */
+int         bw_trade_invite_hold_a(int hold, int a_down);
 
 /* The co-op frame.  mp.c calls these.  They do nothing until a co-op game
  * is running. */
@@ -96,6 +102,9 @@ const char *bw_trade_invite_live_status(void);
 int         bw_trade_invite_live_wants_screen(void);
 void        bw_trade_invite_live_accept(void);
 void        bw_trade_invite_live_decline(void);
+/* Close the field picture's claim on A.  The next A edge waits until A
+ * has been released. */
+void        bw_trade_invite_live_release(void);
 
 #ifdef __cplusplus
 }

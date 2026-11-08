@@ -458,6 +458,131 @@ static void fill_inspect(const u8 logical[0x80], const u8 party[0x54],
     out->level = party[4];
     out->has_mail = (u8)(party[0x1B] != 0xFFu);
     out->shiny = (u8)shiny_of(out->ot_id, pid);
+    out->has_nick = (u8)((iv >> 31) & 1u);
+    if (out->has_nick) {
+        int k;
+
+        for (k = 0; k < 11; k++) {
+            u16 u = rd16(logical + 0x40u + (u32)k * 2u);
+
+            if (u == 0u || u == 0xFFFFu) {
+                break;
+            }
+            out->nick[k] = u;
+            out->nick_n++;
+        }
+        if (out->nick_n == 0u) {
+            out->has_nick = 0;
+        }
+    }
+}
+
+static int utf8_text_ok(const char *s, int max_bytes)
+{
+    int n = 0;
+
+    if (s == NULL || s[0] == '\0') {
+        return 0;
+    }
+    while (s[n] != '\0') {
+        unsigned char c = (unsigned char)s[n];
+        int need, i;
+
+        if (c < 0x20u || c == 0x7Fu) {
+            return 0;
+        }
+        if (c < 0x80u) {
+            need = 1;
+        } else if ((c & 0xE0u) == 0xC0u) {
+            if (c < 0xC2u) {
+                return 0;
+            }
+            need = 2;
+        } else if ((c & 0xF0u) == 0xE0u) {
+            need = 3;
+        } else {
+            return 0;
+        }
+        if (n + need > max_bytes) {
+            return 0;
+        }
+        for (i = 1; i < need; i++) {
+            if (((unsigned char)s[n + i] & 0xC0u) != 0x80u) {
+                return 0;
+            }
+        }
+        if (need == 3 && c == 0xE0u && (unsigned char)s[n + 1] < 0xA0u) {
+            return 0;
+        }
+        if (need == 3 && c == 0xEDu && (unsigned char)s[n + 1] >= 0xA0u) {
+            return 0;
+        }
+        n += need;
+    }
+    return n > 0;
+}
+
+static int nick_utf8(const u16 *nick, int n, char *out, int cap)
+{
+    int i, at = 0;
+
+    if (nick == NULL || n < 1 || out == NULL || cap < 2) {
+        return 0;
+    }
+    if (n > 11) {
+        n = 11;
+    }
+    for (i = 0; i < n; i++) {
+        u32 u = nick[i];
+        int need;
+
+        if (u == 0u || u == 0xFFFFu) {
+            break;
+        }
+        if (u < 0x20u || u == 0x7Fu || (u >= 0xD800u && u <= 0xDFFFu) || u > 0xFFFDu) {
+            return 0;
+        }
+        need = u < 0x80u ? 1 : u < 0x800u ? 2 : 3;
+        if (at + need >= cap) {
+            return 0;
+        }
+        if (need == 1) {
+            out[at++] = (char)u;
+        } else if (need == 2) {
+            out[at++] = (char)(0xC0u | (u >> 6));
+            out[at++] = (char)(0x80u | (u & 0x3Fu));
+        } else {
+            out[at++] = (char)(0xE0u | (u >> 12));
+            out[at++] = (char)(0x80u | ((u >> 6) & 0x3Fu));
+            out[at++] = (char)(0x80u | (u & 0x3Fu));
+        }
+    }
+    out[at] = '\0';
+    return at > 0;
+}
+
+int bw_session_trade_format_label(u16 species, const char *species_name,
+                                 int has_nick, const u16 *nick, int nick_n,
+                                 char *out, int cap)
+{
+    char spec[48];
+    char nk[48];
+    int named, nicked;
+
+    if (out == NULL || cap < 1) {
+        return -1;
+    }
+    out[0] = '\0';
+    named = species >= 1u && species <= (u16)BW_STRADE_VANILLA_SPECIES &&
+            utf8_text_ok(species_name, 32);
+    snprintf(spec, sizeof spec, "%s", named ? species_name : "Unbekannt");
+    nicked = has_nick && nick_utf8(nick, nick_n, nk, (int)sizeof nk);
+    if (nicked && strcmp(nk, spec) != 0) {
+        snprintf(out, (size_t)cap, "%s (%s)", nk, spec);
+    } else {
+        snprintf(out, (size_t)cap, "%s", spec);
+    }
+    return 0;
 }
 
 static int limits_ok(const BwTradeInspect *in, const BwTradeLimits *lim)
@@ -2117,6 +2242,33 @@ void bw_session_trade_clear_outcome(BwSessionTrade *t)
     if (t != NULL) {
         t->outcome = 0;
     }
+}
+
+int bw_session_trade_view_open(const BwSessionTrade *t)
+{
+    if (t == NULL) {
+        return 0;
+    }
+    if (t->phase != BW_STRADE_IDLE) {
+        return 1;
+    }
+    return t->outcome != BW_STRADE_OUT_NONE;
+}
+
+int bw_session_trade_success_ready(const BwSessionTrade *t)
+{
+    return t != NULL && t->phase == BW_STRADE_IDLE &&
+           t->outcome == BW_STRADE_OUT_BOTH_SAVED;
+}
+
+int bw_session_trade_dismiss_success(BwSessionTrade *t)
+{
+    if (!bw_session_trade_success_ready(t)) {
+        return -1;
+    }
+    t->outcome = BW_STRADE_OUT_NONE;
+    fprintf(stderr, "eidos: trade: trade view closed after both saves\n");
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */

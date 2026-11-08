@@ -19,6 +19,7 @@
 
 static BwTradeInvite *g_inv;
 static u32 g_prev_buttons;
+static int g_a_hold;
 
 static int send_port(void *user, u32 peer, const void *data, u32 n)
 {
@@ -111,6 +112,13 @@ void bw_trade_invite_mp_frame(u64 now_ms)
     look.a_edge = (edge & BW_KEY_A) != 0;
     look.accept_edge = look.a_edge;
     look.decline_edge = (edge & BW_KEY_B) != 0;
+    /* The picture just closed.  A that is still down from Confirm is not
+     * a new invitation. */
+    if (g_a_hold) {
+        look.a_edge = 0;
+        look.accept_edge = 0;
+        g_a_hold = bw_trade_invite_hold_a(g_a_hold, (buttons & BW_KEY_A) != 0);
+    }
     /* A load is still rebuilding avatars, or the field is not the quiet
      * field: do not treat a cell as a partner. */
     if (look.have_self && look.field_quiet && bw_mp_avatars_ready()) {
@@ -156,5 +164,12 @@ void bw_trade_invite_live_decline(void)
 {
     if (g_inv != NULL) {
         bw_trade_invite_decline(g_inv);
+    }
+}
+
+void bw_trade_invite_live_release(void)
+{
+    if (g_inv != NULL && bw_trade_invite_release(g_inv) == 0) {
+        g_a_hold = 1;
     }
 }

@@ -103,7 +103,19 @@ typedef struct BwTradeInspect {
     u32  ot_id;
     u16  evo_to;            /* 0 when this side will not evolve it        */
     u16  evo_method;
+    u8   has_nick;          /* the record's own nickname bit, not a rename */
+    u8   nick_n;            /* units in nick, 0 when there is none         */
+    u16  nick[11];          /* block C, stopped before 0 or 0xFFFF         */
 } BwTradeInspect;
+
+/* The line the trade picture shows.  `species_name` is UTF-8 from the
+ * running game's text (a/0/0/2), or NULL when that text is missing.
+ * Species outside 1..649, or a missing or broken name, becomes
+ * "Unbekannt".  A nickname is shown beside the species and is not written
+ * back.  0, or -1 when out is NULL. */
+int  bw_session_trade_format_label(u16 species, const char *species_name,
+                                  int has_nick, const u16 *nick, int nick_n,
+                                  char *out, int cap);
 
 /*
  * The party's storage.  read and write move one encoded 0xDC record.
@@ -289,6 +301,16 @@ int  bw_session_trade_slot_info(const BwSessionTrade *t, u32 slot,
                                BwTradeInspect *out);
 int  bw_session_trade_outcome(const BwSessionTrade *t);
 void bw_session_trade_clear_outcome(BwSessionTrade *t);
+
+/* 1 while the field picture must stay: the trade is not idle, or a result
+ * is still on screen.  0 when the field can take the controls again. */
+int  bw_session_trade_view_open(const BwSessionTrade *t);
+/* 1 only after both sides have reported a save and the engine is idle.
+ * Waiting, a one-sided save, an error and an unresolved journal are 0. */
+int  bw_session_trade_success_ready(const BwSessionTrade *t);
+/* Drop that success so the picture can close.  Does not acknowledge a
+ * journal and does nothing for any other state.  0, or -1. */
+int  bw_session_trade_dismiss_success(BwSessionTrade *t);
 
 /* Bind the engine the rows read.  NULL clears it. */
 void bw_session_trade_ui_bind(BwSessionTrade *t);

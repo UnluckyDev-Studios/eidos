@@ -283,6 +283,58 @@ static int test_idle_and_transition(void)
     return 0;
 }
 
+static int test_release_and_reentry(void)
+{
+    Pipe ab;
+    BwTradeInvite *a;
+    BwTradeLook L;
+    int hold;
+
+    printf("release and reentry\n");
+    g_entered = 0;
+    memset(&ab, 0, sizeof ab);
+    a = open_one(&ab, 1, 9, 15000);
+    L = look_face(1, 1, 2);
+    BW_CHECK_EQ("ask", bw_trade_invite_consider(a, &L, 100), 0);
+    BW_CHECK_EQ("release while waiting", bw_trade_invite_release(a), -1);
+    BW_CHECK_EQ("still out", bw_trade_invite_phase(a), BW_TINV_OUT);
+    bw_trade_invite_destroy(a);
+
+    g_entered = 0;
+    memset(&ab, 0, sizeof ab);
+    a = open_one(&ab, 1, 9, 15000);
+    L = look_face(1, 1, 2);
+    BW_CHECK_EQ("ask2", bw_trade_invite_consider(a, &L, 300), 0);
+    /* peer accepts through the normal line after we read the id from the send */
+    {
+        unsigned id = 0;
+        char line[64];
+
+        sscanf(ab.line[0], "ti1 i %u", &id);
+        snprintf(line, sizeof line, "ti1 a %u", id);
+        bw_trade_invite_on_line(a, 2, line, (u32)strlen(line), 400);
+    }
+    BW_CHECK_EQ("entered", bw_trade_invite_phase(a), BW_TINV_ENTERED);
+    BW_CHECK_EQ("screen up", bw_trade_invite_wants_trade_screen(a), 1);
+    BW_CHECK_EQ("release", bw_trade_invite_release(a), 0);
+    BW_CHECK_EQ("screen down", bw_trade_invite_wants_trade_screen(a), 0);
+    BW_CHECK_EQ("idle again", bw_trade_invite_phase(a), BW_TINV_IDLE);
+    ab.n = 0;
+    hold = 1;
+    hold = bw_trade_invite_hold_a(hold, 1);
+    BW_CHECK_EQ("held A stays", hold, 1);
+    L = look_face(1, 0, 2);
+    BW_CHECK_EQ("no reinvite while held", bw_trade_invite_consider(a, &L, 500), -1);
+    BW_CHECK_EQ("no send", ab.n, 0);
+    hold = bw_trade_invite_hold_a(hold, 0);
+    BW_CHECK_EQ("released", hold, 0);
+    L = look_face(1, 1, 2);
+    BW_CHECK_EQ("new invite", bw_trade_invite_consider(a, &L, 600), 0);
+    BW_CHECK_EQ("one send", ab.n, 1);
+    bw_trade_invite_destroy(a);
+    return 0;
+}
+
 int main(void)
 {
     test_geometry();
@@ -290,6 +342,7 @@ int main(void)
     test_decline_timeout_stale();
     test_tie_and_repeat();
     test_idle_and_transition();
+    test_release_and_reentry();
     BW_REPORT("test_trade_invite");
     return bw_failures == 0 ? 0 : 1;
 }

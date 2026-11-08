@@ -95,7 +95,18 @@ rollt nichts zurück. Die Karten rücken erst zusammen, wenn das Journal
 geschrieben ist; der Balken dazu heißt nicht, dass gespeichert wurde.
 „Beide Seiten haben gespeichert“ erscheint erst, wenn jede Seite ihr
 eigenes Save gemeldet hat, und auch dann ist das kein gemeinsamer
-Schreibvorgang.
+Schreibvorgang. Die Ansicht bleibt danach kurz lesbar (etwa 90 Bilder)
+und schließt sich dann von selbst. Warten, ein einseitiges Save, ein
+Fehler und ein ungelöstes Journal schließen sich nicht, und nichts davon
+bestätigt das Journal.
+
+Die große Zeile ist der Name aus den laufenden Texten (`a/0/0/2`, Datei
+`0x46`, dieselbe Abfrage wie `ui_species_name`). Ein Datenmod, das diese
+Datei ersetzt, liefert seine Namen. Es ist keine Namensliste in diesem
+Programm. Fehlt der Text, ist er kaputt oder liegt die Art außerhalb
+1 bis 649, steht „Unbekannt“. Die Nummer bleibt nur in der Zeile darunter.
+Ein Spitzname aus dem Datensatz steht davor in Klammern und wird nicht
+zurückgeschrieben. Die Icons sind davon getrennt.
 
 Ein Bild kommt nur aus den lokalen Party-Icons (`a/0/0/7` über
 `ui_mon_icon`), wenn diese Daten im laufenden Spiel liegen. Fehlt das

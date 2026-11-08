@@ -2286,10 +2286,17 @@ static void field_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
     trade_invite_panel(c, in, cw, ch);
 }
 
-/* Species, level and item for one card.  No nickname: that text can be
- * the player's own and is not required to tell the two offers apart. */
-static void trade_card_text(const BwTradeInspect *info, int present, char *line, int nline)
+/* About 1.5 s at 60 frames, then the success picture closes itself. */
+#define TRADE_SUCCESS_FRAMES 90
+static int g_success_hold;
+
+/* The name is the game's own string for that species (a/0/0/2 file 0x46),
+ * which a language or data mod replaces.  Nothing here is a copied list.
+ * The number stays on the detail line. */
+static void trade_name_line(const BwTradeInspect *info, int present, char *line, int nline)
 {
+    char looked[64];
+
     if (!present || info == NULL) {
         snprintf(line, (size_t)nline, "keins");
         return;
@@ -2298,13 +2305,40 @@ static void trade_card_text(const BwTradeInspect *info, int present, char *line,
         snprintf(line, (size_t)nline, "ungueltig");
         return;
     }
-    if (info->evo_to != 0u) {
-        snprintf(line, (size_t)nline, "#%03u  Lv %u  Item %u  -> #%03u",
-                 info->species, info->level, info->item, info->evo_to);
-    } else {
-        snprintf(line, (size_t)nline, "#%03u  Lv %u  Item %u",
-                 info->species, info->level, info->item);
+    looked[0] = '\0';
+    if (info->species >= 1u && info->species <= (u16)BW_STRADE_VANILLA_SPECIES &&
+        ui_species_name((int)info->species, looked, (int)sizeof looked) <= 0) {
+        looked[0] = '\0';
     }
+    (void)bw_session_trade_format_label(info->species, looked[0] != '\0' ? looked : NULL,
+                                       info->has_nick, info->nick, info->nick_n,
+                                       line, nline);
+}
+
+static void trade_detail_line(const BwTradeInspect *info, int present, char *line, int nline)
+{
+    if (!present || info == NULL || info->reason != BW_STRADE_OK) {
+        line[0] = '\0';
+        return;
+    }
+    if (info->species >= 1u && info->species <= (u16)BW_STRADE_VANILLA_SPECIES) {
+        if (info->evo_to != 0u) {
+            snprintf(line, (size_t)nline, "Lv %u  Item %u  Nr. %03u  -> %u",
+                     info->level, info->item, info->species, info->evo_to);
+        } else {
+            snprintf(line, (size_t)nline, "Lv %u  Item %u  Nr. %03u",
+                     info->level, info->item, info->species);
+        }
+    } else {
+        snprintf(line, (size_t)nline, "Lv %u  Item %u", info->level, info->item);
+    }
+}
+
+static void close_success_view(BwSessionTrade *t)
+{
+    (void)bw_session_trade_dismiss_success(t);
+    bw_trade_invite_live_release();
+    g_success_hold = 0;
 }
 
 static const char *trade_headline(const BwTradeFace *f)
@@ -2396,8 +2430,12 @@ static void trade_board(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch,
             cursor++;
         }
     }
-    if ((keys & BW_KEY_A) && f->phase == BW_STRADE_IDLE && f->outcome != 0) {
+    if ((keys & BW_KEY_A) && bw_session_trade_success_ready(t)) {
+        close_success_view(t);
+    } else if ((keys & BW_KEY_A) && f->phase == BW_STRADE_IDLE &&
+               f->outcome == BW_STRADE_OUT_CANCELLED) {
         bw_session_trade_clear_outcome(t);
+        bw_trade_invite_live_release();
     } else if ((keys & BW_KEY_A) && f->phase == BW_STRADE_TALK && n > 0 && !f->have_local) {
         (void)bw_session_trade_offer(t, (u32)cursor);
     } else if ((keys & BW_KEY_A) && f->phase == BW_STRADE_TALK &&
@@ -2405,8 +2443,11 @@ static void trade_board(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch,
         (void)bw_session_trade_confirm(t);
     }
     if (keys & BW_KEY_B) {
-        if (f->phase == BW_STRADE_IDLE && f->outcome != 0) {
+        if (bw_session_trade_success_ready(t)) {
+            close_success_view(t);
+        } else if (f->phase == BW_STRADE_IDLE && f->outcome == BW_STRADE_OUT_CANCELLED) {
             bw_session_trade_clear_outcome(t);
+            bw_trade_invite_live_release();
         } else if (!busy && f->phase != BW_STRADE_IDLE) {
             (void)bw_session_trade_cancel(t);
         }
@@ -2441,8 +2482,10 @@ static void trade_board(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch,
         (void)lx;
         ui_text(c, x + 12, y + 56, "Dein Pokemon", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
         ui_text(c, x + w / 2 + 8, y + 56, "Angebot", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
-        trade_card_text(f->have_local ? &f->local_info : NULL, f->have_local, line, (int)sizeof line);
-        ui_text(c, x + 12 + shift, y + 74, line, UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
+        trade_name_line(f->have_local ? &f->local_info : NULL, f->have_local, line, (int)sizeof line);
+        ui_text(c, x + 12 + shift, y + 74, line, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        trade_detail_line(f->have_local ? &f->local_info : NULL, f->have_local, line, (int)sizeof line);
+        ui_text(c, x + 12 + shift, y + 88, line, UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
         if (f->have_local && f->local_info.reason == BW_STRADE_OK) {
             ic = ui_mon_icon(f->local_info.is_egg ? 650 : f->local_info.species,
                              f->local_info.form, (int)((in->frame / 12) & 1));
@@ -2451,8 +2494,10 @@ static void trade_board(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch,
             ui_image(c, x + 12 + shift, y + 90, ic, 1);
         }
         ic = NULL;
-        trade_card_text(f->have_peer ? &f->peer_info : NULL, f->have_peer, line, (int)sizeof line);
-        ui_text(c, rx, y + 74, line, UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
+        trade_name_line(f->have_peer ? &f->peer_info : NULL, f->have_peer, line, (int)sizeof line);
+        ui_text(c, rx, y + 74, line, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        trade_detail_line(f->have_peer ? &f->peer_info : NULL, f->have_peer, line, (int)sizeof line);
+        ui_text(c, rx, y + 88, line, UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
         if (f->have_peer && f->peer_info.reason == BW_STRADE_OK) {
             ic = ui_mon_icon(f->peer_info.is_egg ? 650 : f->peer_info.species,
                              f->peer_info.form, (int)((in->frame / 12) & 1));
@@ -2476,8 +2521,11 @@ static void trade_board(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch,
         if (bw_session_trade_slot_info(t, (u32)i, &slot) != 0 || slot.reason != BW_STRADE_OK) {
             snprintf(line, sizeof line, "%s Fach %d  nicht lesbar", sel ? ">" : " ", i + 1);
         } else {
-            snprintf(line, sizeof line, "%s Fach %d  #%03u Lv %u", sel ? ">" : " ",
-                     i + 1, slot.species, slot.level);
+            char name[64];
+
+            trade_name_line(&slot, 1, name, (int)sizeof name);
+            snprintf(line, sizeof line, "%s Fach %d  %s  Lv %u", sel ? ">" : " ",
+                     i + 1, name, slot.level);
         }
         ui_text(c, x + 12, yrow, line, sel ? UI_WHITE : UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
         row.x = x + 8;
@@ -2534,6 +2582,17 @@ static void trade_invite_panel(EidosUiCtx *c, const EidosUiFrame *in, int cw, in
     live = trade != NULL &&
            (show_trade || face.phase != BW_STRADE_IDLE ||
             face.outcome != BW_STRADE_OUT_NONE);
+    /* Both saves are in.  The picture stays long enough to read, then
+     * this overlay goes away.  A one-sided save does not take this path. */
+    if (bw_session_trade_success_ready(trade)) {
+        if (++g_success_hold >= TRADE_SUCCESS_FRAMES) {
+            close_success_view(trade);
+            eidos_ui_take_keys(BW_KEY_A | BW_KEY_B | BW_KEY_UP | BW_KEY_DOWN);
+            return;
+        }
+    } else {
+        g_success_hold = 0;
+    }
     if (prompt == NULL && !live && (status == NULL || status[0] == '\0')) {
         return;
     }

@@ -1595,7 +1595,16 @@ int eidos_sui_input(unsigned pressed, unsigned held)
         BwSessionTrade *t = bw_session_trade_link_engine();
         u32 stamp = t != NULL ? bw_session_trade_stamp(t) : 0u;
 
-        if (stamp != g_trade_stamp) {
+        /* The list is the settings fallback.  After both sides have saved,
+         * leave it.  The field picture still shows the short success line.
+         * An unresolved journal does not take this branch. */
+        if (bw_session_trade_success_ready(t)) {
+            g_trade_view = 0;
+            build_rows();
+            g.cursor = 0;
+            g.scroll = 0;
+            res |= EIDOS_SUI_REDRAW;
+        } else if (stamp != g_trade_stamp) {
             int cursor = g.cursor;
 
             build_trade_rows();

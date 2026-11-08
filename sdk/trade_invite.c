@@ -335,3 +335,25 @@ int bw_trade_invite_wants_trade_screen(const BwTradeInvite *t)
 {
     return t != NULL && t->entered;
 }
+
+int bw_trade_invite_release(BwTradeInvite *t)
+{
+    if (t == NULL || t->phase != BW_TINV_ENTERED) {
+        return -1;
+    }
+    t->phase = BW_TINV_IDLE;
+    t->peer = 0;
+    t->id = 0;
+    t->until = 0;
+    t->entered = 0;
+    set_status(t, "");
+    return 0;
+}
+
+int bw_trade_invite_hold_a(int hold, int a_down)
+{
+    if (!hold) {
+        return 0;
+    }
+    return a_down ? 1 : 0;
+}
