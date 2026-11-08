@@ -1098,6 +1098,7 @@ static BwSessionHandler g_port_handler;
 /* The Link's handler: the radio's frames under BW_MOD_NET_LINK_KEY
  * (sdk/link.c). */
 static BwSessionHandler g_link_handler;
+static BwSessionHandler g_trade_handler;
 
 /* The relay's last error (`E <reason> <text>`), for the port: the reason
  * word ("unknown-code" after a relay restart, "removed", "full" and the
@@ -2769,6 +2770,19 @@ void bw_mod_net_set_link_handler(BwSessionHandler fn)
     bw_mutex_unlock(g_lock);
 }
 
+int bw_mod_net_trade_send(u32 peer, const void *buf, u32 size)
+{
+    return send_keyed(peer, BW_MOD_NET_TRADE_KEY, buf, size);
+}
+
+void bw_mod_net_set_trade_handler(BwSessionHandler fn)
+{
+    net_init();
+    bw_mutex_lock(g_lock);
+    g_trade_handler = fn;
+    bw_mutex_unlock(g_lock);
+}
+
 void bw_mod_net_set_port_handler(BwSessionHandler fn)
 {
     net_init();
@@ -3195,6 +3209,13 @@ void bw_mod_net_frame(void)
             continue;
         }
         if (kind == (u32)BW_SESSION_MESSAGE &&
+            strcmp(key, BW_MOD_NET_TRADE_KEY) == 0) {
+            if (g_trade_handler != NULL) {
+                g_trade_handler(peer, (int)kind, (const void *)data, size);
+            }
+            continue;
+        }
+        if (kind == (u32)BW_SESSION_MESSAGE &&
             strcmp(key, BW_MOD_NET_PORT_KEY) == 0) {
             if (g_port_handler != NULL) {
                 g_port_handler(peer, (int)kind, (const void *)data, size);
@@ -3233,6 +3254,9 @@ void bw_mod_net_frame(void)
          * session's events are told */
         if (g_port_handler != NULL) {
             g_port_handler(peer, (int)kind, NULL, 0);
+        }
+        if (g_trade_handler != NULL) {
+            g_trade_handler(peer, (int)kind, NULL, 0);
         }
         for (i = 0; i < BW_MOD_NET_MODS_MAX; i++) {
             if (g_mods[i].used && g_mods[i].session != NULL) {

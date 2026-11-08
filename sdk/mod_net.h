@@ -209,6 +209,11 @@ void bw_mod_net_set_port_handler(BwSessionHandler fn);
 int  bw_mod_net_link_send(u32 peer, const void *buf, u32 size);
 void bw_mod_net_set_link_handler(BwSessionHandler fn);
 
+/* Session trade (sdk/session_trade.h).  Not the radio and not co-op. */
+#define BW_MOD_NET_TRADE_KEY "eidos:trade"
+int  bw_mod_net_trade_send(u32 peer, const void *buf, u32 size);
+void bw_mod_net_set_trade_handler(BwSessionHandler fn);
+
 /* The host removes a player (`Q`); the player is told `E removed`. */
 int  bw_mod_net_session_remove(u32 peer);
 

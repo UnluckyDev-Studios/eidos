@@ -581,6 +581,10 @@ set(BW_SDK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mod_net.c          # the peer sessions and the external control
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mp.c               # multiplayer: the lobby, the start and the pause
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/link.c             # Link sessions: the radio over the relay
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/session_trade.c    # mutually confirmed session trade
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/session_trade_link.c # that trade on a private Link session
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/trade_invite.c     # ask a visible partner before the trade
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/trade_invite_mp.c  # the co-op field's A press for that ask
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/tls_roots.c        # the roots a TLS relay is checked against
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/save_slots.c       # several single-player saves
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk/mod_frame.c        # the mod layer's frame tick
@@ -1971,6 +1975,22 @@ target_include_directories(test_mp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/sdk ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(test_mp PRIVATE eidos)
 add_test(NAME test_mp COMMAND test_mp)
+
+# Session trade does not need a ROM or the game.  The executable is the
+# protocol, the journal and synthetic Pokemon records only.
+add_executable(test_session_trade
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_session_trade.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/session_trade.c)
+target_include_directories(test_session_trade PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_test(NAME test_session_trade COMMAND test_session_trade)
+
+add_executable(test_trade_invite
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_trade_invite.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk/trade_invite.c)
+target_include_directories(test_trade_invite PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/sdk ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_test(NAME test_trade_invite COMMAND test_trade_invite)
 
 add_test(NAME test_mod_wasm COMMAND test_mod_wasm)
 # With the runtime, the test also registers an import of its own (an event

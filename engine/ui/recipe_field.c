@@ -43,6 +43,9 @@
 
 #include "ui.h"
 #include "kit.h"
+#include "trade_invite.h"
+#include "session_trade.h"
+#include "session_trade_link.h"
 #include "plat_thread.h"
 #include "port.h"
 #include "dsmem.h"
@@ -55,6 +58,7 @@
 #define WEAK __attribute__((weak))
 
 static int small_button(EidosUiCtx *c, int *x, int y, const char *label, int h, const char *key);
+static void trade_invite_panel(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch);
 static int small_button_w(const char *label, const char *key);
 struct FieldNow;
 static int choices_now(const struct FieldNow *f, u8 **list, u8 **win);
@@ -2278,6 +2282,355 @@ static void field_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
     }
     if (use_item) {
         eidos_ui_press(BW_KEY_Y, 10);
+    }
+    trade_invite_panel(c, in, cw, ch);
+}
+
+/* About 1.5 s at 60 frames, then the success picture closes itself. */
+#define TRADE_SUCCESS_FRAMES 90
+static int g_success_hold;
+
+/* The name is the game's own string for that species (a/0/0/2 file 0x46),
+ * which a language or data mod replaces.  Nothing here is a copied list.
+ * The number stays on the detail line. */
+static void trade_name_line(const BwTradeInspect *info, int present, char *line, int nline)
+{
+    char looked[64];
+
+    if (!present || info == NULL) {
+        snprintf(line, (size_t)nline, "keins");
+        return;
+    }
+    if (info->reason != BW_STRADE_OK) {
+        snprintf(line, (size_t)nline, "ungueltig");
+        return;
+    }
+    looked[0] = '\0';
+    if (info->species >= 1u && info->species <= (u16)BW_STRADE_VANILLA_SPECIES &&
+        ui_species_name((int)info->species, looked, (int)sizeof looked) <= 0) {
+        looked[0] = '\0';
+    }
+    (void)bw_session_trade_format_label(info->species, looked[0] != '\0' ? looked : NULL,
+                                       info->has_nick, info->nick, info->nick_n,
+                                       line, nline);
+}
+
+static void trade_detail_line(const BwTradeInspect *info, int present, char *line, int nline)
+{
+    if (!present || info == NULL || info->reason != BW_STRADE_OK) {
+        line[0] = '\0';
+        return;
+    }
+    if (info->species >= 1u && info->species <= (u16)BW_STRADE_VANILLA_SPECIES) {
+        if (info->evo_to != 0u) {
+            snprintf(line, (size_t)nline, "Lv %u  Item %u  Nr. %03u  -> %u",
+                     info->level, info->item, info->species, info->evo_to);
+        } else {
+            snprintf(line, (size_t)nline, "Lv %u  Item %u  Nr. %03u",
+                     info->level, info->item, info->species);
+        }
+    } else {
+        snprintf(line, (size_t)nline, "Lv %u  Item %u", info->level, info->item);
+    }
+}
+
+static void close_success_view(BwSessionTrade *t)
+{
+    (void)bw_session_trade_dismiss_success(t);
+    bw_trade_invite_live_release();
+    g_success_hold = 0;
+}
+
+static const char *trade_headline(const BwTradeFace *f)
+{
+    if (f->outcome == BW_STRADE_OUT_BOTH_SAVED && f->phase == BW_STRADE_IDLE) {
+        return "Beide Seiten haben gespeichert. Kein gemeinsamer Schreibvorgang.";
+    }
+    if (f->outcome == BW_STRADE_OUT_CANCELLED && f->phase == BW_STRADE_IDLE) {
+        return "Abgebrochen. Nichts wurde als fertig gewertet.";
+    }
+    switch (f->phase) {
+    case BW_STRADE_TALK:
+        if (f->party_n == 0) {
+            return "Keine Pokemon. Es wird kein Fach gelesen.";
+        }
+        if (!f->have_local) {
+            return "Waehle dein Pokemon. A bietet es an.";
+        }
+        if (!f->have_peer) {
+            return "Angebot ist raus. Warte auf das andere Pokemon.";
+        }
+        if (!f->conf_local) {
+            return "Pruefe das Angebot. A bestaetigt genau diese Bytes.";
+        }
+        if (!f->conf_peer) {
+            return "Du hast bestaetigt. Warte auf die andere Seite.";
+        }
+        return "Beide bestaetigt. Noch nicht gespeichert.";
+    case BW_STRADE_PREPARED:
+        return "Journal geschrieben. Die Party ist noch nicht gespeichert.";
+    case BW_STRADE_APPLYING:
+        return "Diese Seite speichert. Noch nicht fertig.";
+    case BW_STRADE_SAVED:
+        return "Diese Seite hat gespeichert. Die andere noch nicht.";
+    case BW_STRADE_UNRESOLVED:
+        return "Ungeklaert. Nichts wird automatisch bestaetigt.";
+    case BW_STRADE_AWAIT:
+        return "Partner weg vor dem Save. Party unveraendert.";
+    case BW_STRADE_OPEN_SENT:
+        return "Warte auf die andere Seite.";
+    default:
+        return "Tausch";
+    }
+}
+
+/* The field trade picture.  Icons, when they appear, are the local party
+ * icons (a/0/0/7).  A missing icon is a numbered card, not a downloaded
+ * sprite.  The slide while the journal is locked does not mean the save
+ * has finished. */
+static void trade_board(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch,
+                        BwSessionTrade *t, const BwTradeFace *f)
+{
+    static int cursor;
+    static int anim;
+    int w, h, x, y, i, n, shift, busy;
+    char line[96];
+    u32 keys;
+    const char *head = trade_headline(f);
+
+    n = f->party_n;
+    if (n < 0) {
+        n = 0;
+    }
+    if (n > 6) {
+        n = 6;
+    }
+    if (cursor >= n) {
+        cursor = n > 0 ? n - 1 : 0;
+    }
+    if (f->phase == BW_STRADE_PREPARED || f->phase == BW_STRADE_APPLYING) {
+        if (anim < 16) {
+            anim++;
+        }
+    } else if (f->phase == BW_STRADE_TALK || f->phase == BW_STRADE_IDLE) {
+        anim = 0;
+    }
+    shift = anim * 4;
+    busy = f->phase == BW_STRADE_APPLYING || f->phase == BW_STRADE_SAVED ||
+           f->phase == BW_STRADE_UNRESOLVED || f->phase == BW_STRADE_AWAIT;
+    keys = eidos_ui_keys_pressed();
+    eidos_ui_take_keys(BW_KEY_A | BW_KEY_B | BW_KEY_UP | BW_KEY_DOWN);
+    if (keys & BW_KEY_UP) {
+        if (cursor > 0) {
+            cursor--;
+        }
+    }
+    if (keys & BW_KEY_DOWN) {
+        if (cursor + 1 < n) {
+            cursor++;
+        }
+    }
+    if ((keys & BW_KEY_A) && bw_session_trade_success_ready(t)) {
+        close_success_view(t);
+    } else if ((keys & BW_KEY_A) && f->phase == BW_STRADE_IDLE &&
+               f->outcome == BW_STRADE_OUT_CANCELLED) {
+        bw_session_trade_clear_outcome(t);
+        bw_trade_invite_live_release();
+    } else if ((keys & BW_KEY_A) && f->phase == BW_STRADE_TALK && n > 0 && !f->have_local) {
+        (void)bw_session_trade_offer(t, (u32)cursor);
+    } else if ((keys & BW_KEY_A) && f->phase == BW_STRADE_TALK &&
+               f->have_local && f->have_peer && !f->conf_local) {
+        (void)bw_session_trade_confirm(t);
+    }
+    if (keys & BW_KEY_B) {
+        if (bw_session_trade_success_ready(t)) {
+            close_success_view(t);
+        } else if (f->phase == BW_STRADE_IDLE && f->outcome == BW_STRADE_OUT_CANCELLED) {
+            bw_session_trade_clear_outcome(t);
+            bw_trade_invite_live_release();
+        } else if (!busy && f->phase != BW_STRADE_IDLE) {
+            (void)bw_session_trade_cancel(t);
+        }
+    }
+
+    w = cw > 520 ? 500 : cw - 16;
+    if (w < 280) {
+        w = cw - 8;
+    }
+    h = 168 + (n > 0 ? n * 16 : 16);
+    if (h > ch - 24) {
+        h = ch - 24;
+    }
+    x = (cw - w) / 2;
+    y = ch > h + 40 ? (ch - h) / 2 : 16;
+    ui_panel(c, x, y, w, h, UI_CUT_TL | UI_CUT_BR, 6, UI_BODY, UI_EDGE, 235);
+    ui_text(c, x + 12, y + 8, "Tausch", UI_WHITE, UI_EDGE, UI_FONT_LARGE, 1);
+    ui_text(c, x + 12, y + 28, head, UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
+    if (f->phase == BW_STRADE_UNRESOLVED || f->phase == BW_STRADE_AWAIT) {
+        ui_fill(c, x + 8, y + 46, w - 16, 4, 0xC45A3Au, 255);
+    } else if (f->phase == BW_STRADE_APPLYING || f->phase == BW_STRADE_PREPARED) {
+        ui_fill(c, x + 8, y + 46, (w - 16) * (anim + 1) / 17, 4, 0x7EB6FFu, 255);
+    }
+
+    /* Own party on the left, the remote offer on the right.  The cards
+     * step toward the middle only while the save is not verified. */
+    {
+        int lx = x + 12 - (shift > 24 ? 24 : 0);
+        int rx = x + w / 2 + 8 - shift;
+        const UiImage *ic = NULL;
+
+        (void)lx;
+        ui_text(c, x + 12, y + 56, "Dein Pokemon", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        ui_text(c, x + w / 2 + 8, y + 56, "Angebot", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        trade_name_line(f->have_local ? &f->local_info : NULL, f->have_local, line, (int)sizeof line);
+        ui_text(c, x + 12 + shift, y + 74, line, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        trade_detail_line(f->have_local ? &f->local_info : NULL, f->have_local, line, (int)sizeof line);
+        ui_text(c, x + 12 + shift, y + 88, line, UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
+        if (f->have_local && f->local_info.reason == BW_STRADE_OK) {
+            ic = ui_mon_icon(f->local_info.is_egg ? 650 : f->local_info.species,
+                             f->local_info.form, (int)((in->frame / 12) & 1));
+        }
+        if (ic != NULL) {
+            ui_image(c, x + 12 + shift, y + 90, ic, 1);
+        }
+        ic = NULL;
+        trade_name_line(f->have_peer ? &f->peer_info : NULL, f->have_peer, line, (int)sizeof line);
+        ui_text(c, rx, y + 74, line, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        trade_detail_line(f->have_peer ? &f->peer_info : NULL, f->have_peer, line, (int)sizeof line);
+        ui_text(c, rx, y + 88, line, UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
+        if (f->have_peer && f->peer_info.reason == BW_STRADE_OK) {
+            ic = ui_mon_icon(f->peer_info.is_egg ? 650 : f->peer_info.species,
+                             f->peer_info.form, (int)((in->frame / 12) & 1));
+        }
+        if (ic != NULL) {
+            ui_image(c, rx, y + 90, ic, 1);
+        } else if (f->have_peer || f->have_local) {
+            ui_text(c, x + 12, y + 92, "Sprites nur aus den lokalen Daten, sonst die Nummer.",
+                    UI_EDGE2, -1, UI_FONT_SMALL, 1);
+        }
+    }
+    if (n == 0) {
+        ui_text(c, x + 12, y + 112, "Party leer.", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+    }
+    for (i = 0; i < n; i++) {
+        BwTradeInspect slot;
+        EidosUiRect row;
+        int yrow = y + 112 + i * 16;
+        int sel = (i == cursor);
+
+        if (bw_session_trade_slot_info(t, (u32)i, &slot) != 0 || slot.reason != BW_STRADE_OK) {
+            snprintf(line, sizeof line, "%s Fach %d  nicht lesbar", sel ? ">" : " ", i + 1);
+        } else {
+            char name[64];
+
+            trade_name_line(&slot, 1, name, (int)sizeof name);
+            snprintf(line, sizeof line, "%s Fach %d  %s  Lv %u", sel ? ">" : " ",
+                     i + 1, name, slot.level);
+        }
+        ui_text(c, x + 12, yrow, line, sel ? UI_WHITE : UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
+        row.x = x + 8;
+        row.y = yrow - 2;
+        row.w = w / 2 - 16;
+        row.h = 16;
+        if ((eidos_ui_hit(row) & EIDOS_UI_CLICK) && f->phase == BW_STRADE_TALK && !f->conf_local) {
+            cursor = i;
+            (void)bw_session_trade_offer(t, (u32)i);
+        }
+    }
+    {
+        int by = y + h - 28;
+        EidosUiRect yes, no;
+
+        ui_text(c, x + 12, by, busy ? "Abbrechen gesperrt" : "A bestaetigen   B abbrechen",
+                UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        yes.x = x + w - 150;
+        yes.y = by - 2;
+        yes.w = 64;
+        yes.h = 16;
+        no.x = yes.x + 68;
+        no.y = yes.y;
+        no.w = 64;
+        no.h = 16;
+        ui_text(c, yes.x, by, "Ja", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        ui_text(c, no.x, by, "Nein", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        if ((eidos_ui_hit(yes) & EIDOS_UI_CLICK) && f->phase == BW_STRADE_TALK &&
+            f->have_local && f->have_peer && !f->conf_local) {
+            (void)bw_session_trade_confirm(t);
+        }
+        if ((eidos_ui_hit(no) & EIDOS_UI_CLICK) && !busy && f->phase != BW_STRADE_IDLE) {
+            (void)bw_session_trade_cancel(t);
+        }
+    }
+}
+
+/* The invitation and, once both have agreed, the trade picture.  Idle
+ * co-op draws nothing: the trade engine is not created just to look. */
+static void trade_invite_panel(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch)
+{
+    const char *prompt = bw_trade_invite_live_prompt();
+    const char *status = bw_trade_invite_live_status();
+    int show_trade = bw_trade_invite_live_wants_screen();
+    BwSessionTrade *trade = bw_session_trade_link_current();
+    BwTradeFace face;
+    int live;
+    int x, y, w, h;
+
+    memset(&face, 0, sizeof face);
+    if (trade != NULL) {
+        (void)bw_session_trade_face(trade, &face);
+    }
+    live = trade != NULL &&
+           (show_trade || face.phase != BW_STRADE_IDLE ||
+            face.outcome != BW_STRADE_OUT_NONE);
+    /* Both saves are in.  The picture stays long enough to read, then
+     * this overlay goes away.  A one-sided save does not take this path. */
+    if (bw_session_trade_success_ready(trade)) {
+        if (++g_success_hold >= TRADE_SUCCESS_FRAMES) {
+            close_success_view(trade);
+            eidos_ui_take_keys(BW_KEY_A | BW_KEY_B | BW_KEY_UP | BW_KEY_DOWN);
+            return;
+        }
+    } else {
+        g_success_hold = 0;
+    }
+    if (prompt == NULL && !live && (status == NULL || status[0] == '\0')) {
+        return;
+    }
+    w = cw > 280 ? 260 : cw - 16;
+    x = (cw - w) / 2;
+    y = ch / 2 - 36;
+    if (prompt != NULL && face.phase != BW_STRADE_TALK &&
+        face.phase != BW_STRADE_PREPARED && face.phase != BW_STRADE_APPLYING) {
+        EidosUiRect yes, no;
+
+        h = 72;
+        ui_panel(c, x, y, w, h, UI_CUT_TL | UI_CUT_BR, 6, UI_BODY, UI_EDGE, 230);
+        ui_text(c, x + 10, y + 8, prompt, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        ui_text(c, x + 10, y + 24, "Ja", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        ui_text(c, x + w / 2, y + 24, "Nein", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        yes.x = x + 8;
+        yes.y = y + 22;
+        yes.w = w / 2 - 12;
+        yes.h = 22;
+        no.x = x + w / 2;
+        no.y = yes.y;
+        no.w = yes.w;
+        no.h = yes.h;
+        if (eidos_ui_hit(yes) & EIDOS_UI_CLICK) {
+            bw_trade_invite_live_accept();
+        } else if (eidos_ui_hit(no) & EIDOS_UI_CLICK) {
+            bw_trade_invite_live_decline();
+        }
+        return;
+    }
+    if (live && trade != NULL) {
+        trade_board(c, in, cw, ch, trade, &face);
+        return;
+    }
+    if (bw_trade_invite_live_phase() == BW_TINV_OUT &&
+        status != NULL && status[0] != '\0') {
+        ui_panel(c, x, y, w, 28, UI_CUT_TL | UI_CUT_BR, 6, UI_BODY, UI_EDGE, 220);
+        ui_text(c, x + 8, y + 6, status, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
     }
 }
 
