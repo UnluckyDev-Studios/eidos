@@ -41,6 +41,7 @@
 #include <string.h>
 
 #include "mp.h"
+#include "session_trade.h"
 #include "trade_invite.h"
 #include "mod_loader.h"
 #include "mod_net.h"
@@ -2129,6 +2130,29 @@ typedef struct BwMpPos {
 
 static BwMpPos g_pos[BW_MP_PLAYERS_MAX];        /* by peer - 1 */
 
+/* The session trade is inside GAME_DATA_SaveStart/SaveMain.  A savenow
+ * in this window, or for a few frames after it, is that save's own echo. */
+static int g_trade_save;
+static int g_trade_settle;
+static int g_trade_savenow_logged;
+
+void bw_mp_trade_save(int active)
+{
+    if (active) {
+        g_trade_save = 1;
+        g_trade_settle = 0;
+        return;
+    }
+    g_trade_save = 0;
+    g_trade_settle = 180; /* about three seconds at the field rate */
+    g_trade_savenow_logged = 0;
+}
+
+int bw_mp_save_busy(void)
+{
+    return g_mp.saving || g_trade_save;
+}
+
 static struct {
     int   have;
     u16   zone;
@@ -2466,11 +2490,18 @@ int bw_mp_self_cell(u16 *zone, s16 *x, s16 *z, u8 *dir)
     return 0;
 }
 
+int bw_mp_avatars_ready(void)
+{
+    /* After a load the save's old avatar is deleted and the pool is not
+     * safe to treat as the live partner for a few frames. */
+    return g_me.have && g_me.create_hold == 0 && field_quiet_game_data() != NULL;
+}
+
 u32 bw_mp_partner_at(s16 x, s16 z)
 {
     u32 i;
 
-    if (!g_me.have) {
+    if (!bw_mp_avatars_ready()) {
         return 0;
     }
     for (i = 0; i < BW_MP_PLAYERS_MAX; i++) {
@@ -2780,6 +2811,22 @@ static void field_quiet_save(void)
 {
     void *gd;
 
+    if (g_trade_save || g_trade_settle > 0) {
+        int drop = 0;
+
+        (void)bw_session_trade_may_mp_save(g_trade_save, g_trade_settle, g_mp.saving, &drop);
+        if (g_mp.save_wanted && drop && !g_trade_savenow_logged) {
+            g_trade_savenow_logged = 1;
+            g_mp.save_wanted = 0;
+            fprintf(stderr, "eidos: multiplayer: not starting another save; "
+                    "the trade save already owns this write\n");
+        } else if (g_mp.save_wanted && drop) {
+            g_mp.save_wanted = 0;
+        }
+        if (g_trade_save) {
+            return;
+        }
+    }
     if (!g_mp.save_wanted || g_mp.saving ||
         (g_mp.host && !g_mp.save_test) || GAME_DATA_SaveStart == NULL) {
         return;
@@ -3045,7 +3092,12 @@ void bw_mp_frame_at(u64 t)
 {
     g_mp.now_ms = t;
     sends_pump();
-    if (g_mp.in_game && !g_mp.saving && bw_arm7_backup_writes != NULL &&
+    if (g_trade_settle > 0 && !g_trade_save) {
+        g_trade_settle--;
+    }
+    /* While the trade save is writing, this detector must not treat that
+     * write as a fresh "host saved" and ask every game to save again. */
+    if (g_mp.in_game && !g_mp.saving && !g_trade_save && bw_arm7_backup_writes != NULL &&
         bw_arm7_backup_writes() != g_mp.last_writes &&
         (bw_arm7_backup_dirty == NULL || !bw_arm7_backup_dirty())) {
         g_mp.last_writes = bw_arm7_backup_writes();

@@ -193,8 +193,23 @@ void bw_session_trade_on_disconnect(BwSessionTrade *t);
  * this when the same partner is back.  It does not start a new trade. */
 void bw_session_trade_resume(BwSessionTrade *t, u32 peer);
 
-/* Drive prepare, the save and the partner's answers.  Once per frame. */
+/* Drive prepare, the save and the partner's answers.  Once per frame.
+ * A one-sided confirm ends the talk after the wait set at create (about
+ * a minute).  Once the journal is locked this does not cancel, acknowledge
+ * or call the trade finished. */
 void bw_session_trade_poll(BwSessionTrade *t);
+
+/* Frames a one-sided confirm may wait.  0 disables the wait.  The default
+ * is set when the engine is created. */
+void bw_session_trade_set_confirm_wait(BwSessionTrade *t, u32 frames);
+
+/* 1 when a co-op "the host saved" notice may call the game save again.
+ * 0 when a trade save is running, a multiplayer save is running, or
+ * `settle` is still counting down after the trade save (that notice is
+ * the trade's own write, not a second save).  *drop_wanted is 1 when a
+ * pending notice must be discarded instead of started. */
+int  bw_session_trade_may_mp_save(int trade_saving, int settle, int mp_saving,
+                                 int *drop_wanted);
 
 int         bw_session_trade_phase(const BwSessionTrade *t);
 u32         bw_session_trade_partner(const BwSessionTrade *t);
@@ -239,6 +254,41 @@ int  bw_session_trade_respecies(u8 mon[BW_STRADE_MON_SIZE], u16 species,
 /* ------------------------------------------------------------------ */
 /* The screen                                                          */
 /* ------------------------------------------------------------------ */
+
+/* What the field picture shows.  outcome is 0, or one of the values
+ * below.  BOTH_SAVED means each side reported its own save; it does not
+ * mean one shared write.  The picture keeps BOTH_SAVED after the engine
+ * returns to idle, until clear_outcome. */
+enum {
+    BW_STRADE_OUT_NONE = 0,
+    BW_STRADE_OUT_BOTH_SAVED = 1,
+    BW_STRADE_OUT_CANCELLED = 2
+};
+
+typedef struct BwTradeFace {
+    int phase;
+    int slot;             /* offered slot, or -1                              */
+    int party_n;          /* 0 when the party is empty; -1 when unreadable    */
+    int have_local;
+    int have_peer;
+    int conf_local;
+    int conf_peer;
+    int peer_locked;
+    int peer_saved;
+    int outcome;
+    BwTradeInspect local_info;
+    BwTradeInspect peer_info;
+} BwTradeFace;
+
+/* Fills *out.  Does not read a party slot when the party is empty.
+ * 0, or -1 when t or out is NULL. */
+int  bw_session_trade_face(const BwSessionTrade *t, BwTradeFace *out);
+/* One party slot, for the list.  -1 when the slot is outside the party
+ * (including an empty party); the read callback is not used then. */
+int  bw_session_trade_slot_info(const BwSessionTrade *t, u32 slot,
+                               BwTradeInspect *out);
+int  bw_session_trade_outcome(const BwSessionTrade *t);
+void bw_session_trade_clear_outcome(BwSessionTrade *t);
 
 /* Bind the engine the rows read.  NULL clears it. */
 void bw_session_trade_ui_bind(BwSessionTrade *t);

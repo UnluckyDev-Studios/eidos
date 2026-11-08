@@ -258,12 +258,38 @@ static int test_tie_and_repeat(void)
     return 0;
 }
 
+static int test_idle_and_transition(void)
+{
+    Pipe ab;
+    BwTradeInvite *a;
+    BwTradeLook L;
+    int i;
+
+    printf("idle avatar and transition\n");
+    g_entered = 0;
+    memset(&ab, 0, sizeof ab);
+    a = open_one(&ab, 1, 3, 15000);
+    for (i = 0; i < 400; i++) {
+        L = look_face(1, 0, 2);          /* partner visible, A not pressed */
+        BW_CHECK_EQ("idle frame", bw_trade_invite_consider(a, &L, (u64)(1000 + i)), -1);
+    }
+    BW_CHECK_EQ("no send", ab.n, 0);
+    BW_CHECK_EQ("still idle", bw_trade_invite_phase(a), BW_TINV_IDLE);
+    L = look_face(0, 1, 2);              /* field not quiet: loading or an event */
+    BW_CHECK_EQ("transition", bw_trade_invite_consider(a, &L, 2000), -1);
+    BW_CHECK_EQ("still no send", ab.n, 0);
+    BW_CHECK_EQ("no enter", g_entered, 0);
+    bw_trade_invite_destroy(a);
+    return 0;
+}
+
 int main(void)
 {
     test_geometry();
     test_invite();
     test_decline_timeout_stale();
     test_tie_and_repeat();
+    test_idle_and_transition();
     BW_REPORT("test_trade_invite");
     return bw_failures == 0 ? 0 : 1;
 }

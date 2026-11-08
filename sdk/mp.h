@@ -204,8 +204,19 @@ int  bw_mp_self_cell(u16 *zone, s16 *x, s16 *z, u8 *dir);
 
 /* The visible partner standing on (x,z) in this zone, or 0.  The cell is
  * the avatar's, so a partner who is only remembered and not drawn does
- * not count. */
+ * not count.  0 while avatars are being rebuilt after a load. */
 u32  bw_mp_partner_at(s16 x, s16 z);
+
+/* 1 when a drawn partner may be invited: the field is quiet and the
+ * post-load avatar hold has finished. */
+int  bw_mp_avatars_ready(void);
+
+/* The session trade owns GAME_DATA_SaveStart/SaveMain while active is 1.
+ * A co-op savenow must not start a second save in that window, or in the
+ * short settle after it.  0 hands the save back. */
+void bw_mp_trade_save(int active);
+/* 1 while the trade save or the co-op save driver is inside the game save. */
+int  bw_mp_save_busy(void);
 
 /* The save delta a joiner uploads (tests): see sdk/mp.c. */
 int  bw_mp_delta_test(const u8 *base, const u8 *now, u32 size, u32 *dsize, int *bad_ok);

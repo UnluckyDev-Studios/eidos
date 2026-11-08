@@ -86,16 +86,40 @@ abgelehnt. Eine alte Nummer wird ignoriert.
 Ja öffnet den bestehenden Tausch. Angebote und die doppelte Bestätigung
 bleiben. Es wird nichts getauscht, nur weil jemand Ja gesagt hat.
 
-Die Zeile Einstellungen → Netzwerk → Session trade bleibt, für die private
-Link-Sitzung und als Weg im Koop, wenn das Feld keine Einladung zeigt.
+Auf dem Feld liegt danach die Tauschansicht, nicht nur die Einstellungszeile:
+links die eigene Party, rechts das Angebot der anderen Seite, darunter Art,
+Level und Item. A bietet das gewählte Fach an und bestätigt danach genau
+diese Bytes. B bricht ab, solange diese Seite noch nicht speichert. Während
+des Speicherns und solange der Ausgang unklar ist, bricht B nicht ab und
+rollt nichts zurück. Die Karten rücken erst zusammen, wenn das Journal
+geschrieben ist; der Balken dazu heißt nicht, dass gespeichert wurde.
+„Beide Seiten haben gespeichert“ erscheint erst, wenn jede Seite ihr
+eigenes Save gemeldet hat, und auch dann ist das kein gemeinsamer
+Schreibvorgang.
+
+Ein Bild kommt nur aus den lokalen Party-Icons (`a/0/0/7` über
+`ui_mon_icon`), wenn diese Daten im laufenden Spiel liegen. Fehlt das
+Icon, steht die Nummer. Diese Fassung hat die Icons nicht gegen eine ROM
+geprüft und lädt keine Nintendo-Bilder herunter.
+
+Die Zeile Einstellungen → Netzwerk → Session trade bleibt, auf Englisch,
+für die private Link-Sitzung und als Weg im Koop, wenn das Feld keine
+Einladung zeigt.
 
 Koop und private Link sind zwei Sitzungsarten auf demselben Relay. Der
 Avatar gibt es im Koop. Die Einladung läuft über die Koop-Nachrichten
 (`eidos:port`), der Tausch danach über `eidos:trade` in derselben Sitzung.
-Der Spielstand im Koop bleibt der bisherige: der Host hält die Dateien, der
-Beitretende lädt seinen Save hoch. Das Journal und die Bestätigung der
-Bytes gelten weiter. Ein gemeinsamer atomarer Schreibvorgang entsteht
-dadurch nicht.
+Das ist der Koop-Weg. Er ändert nicht, wem der Spielstand gehört: der Host
+hält die Dateien unter `multiplayer/games/<Name>`, der Beitretende spielt
+auf `multiplayer/session.sav` und lädt sie hoch. Jede Seite schreibt ihr
+eigenes Save. Das Journal und die Bestätigung der Bytes gelten weiter.
+Ein gemeinsamer atomarer Schreibvorgang entsteht dadurch nicht. Ein
+Koop-Tausch ist deshalb kein zweiter, sicherer Speicher.
+
+Solange niemand eine Einladung annimmt und niemand die Tauschzeile öffnet,
+liest der Koop-Rahmen die Evolutionsdatei nicht und setzt den Tauschkanal
+nicht. Ein Avatar auf dem Feld allein startet das nicht. Nach einem Laden
+zählt ein Avatar erst, wenn die kurze Sperre nach dem Aufräumen vorbei ist.
 
 ## Ablauf für zwei Spieler
 
@@ -104,21 +128,30 @@ dadurch nicht.
 2. Zwei Eidos mit getrennten Speicherordnern (`BW_SAVE_DIR`) und getrennten
    Einstellungen. Nicht die bereits laufende, bekannte EXE überschreiben:
    diese Fassung in einem eigenen Build-Verzeichnis bauen.
-3. Eine **private** Link-Sitzung: ein Prozess `EIDOS_LINK_TEST=host:<Datei>`,
-   der andere `EIDOS_LINK_TEST=join:<Datei>`. Das ist nicht der Koop-Modus
-   und nicht die öffentliche Luft (`bw:<Version>:radio`).
-4. Im Spiel: Einstellungen, Netzwerk, **Session trade**. Die Zeile gibt es
-   nur in einer privaten Link-Sitzung mit genau einem weiteren Spieler.
-5. **Offer trade**, dann jeder ein Parteifach. Die Partnerzeile zeigt Art,
-   Level, Item und die ersten Bytes des Hash. **Confirm** auf beiden Seiten,
-   solange die Zeile noch dasselbe Pokémon nennt.
-6. Das Menü verlassen. Gespeichert wird erst, wenn das Feld ruhig ist (kein
-   Ereignis), über `GAME_DATA_SaveStart` / `SaveMain`. Vorher liegt das
-   Pokémon noch auf dem alten Platz.
-7. **Cancel** vor dem Speichern bewegt nichts. B geht aus der Liste zurück.
+3. Entweder eine **private** Link-Sitzung (`EIDOS_LINK_TEST=host:<Datei>`
+   und `join:<Datei>`, nicht die öffentliche Luft) oder eine normale
+   Koop-Sitzung, in der beide Figuren auf demselben Feld sichtbar sind.
+4. Im Koop: vor den Avatar stellen und A. Ja auf der anderen Seite öffnet
+   die Feldansicht. Sonst: Einstellungen, Netzwerk, **Session trade**.
+   Die Zeile gibt es in der privaten Link-Sitzung und im laufenden Koop,
+   nicht in der Lobby und nicht in der öffentlichen Luft.
+5. Jede Seite ein Parteifach, dann beide **Confirm** / A, solange die
+   Zeile noch dasselbe Pokémon nennt. Eine Bestätigung allein speichert
+   nicht. Eine leere Party lässt sich nicht anbieten; das Fach wird dann
+   nicht gelesen.
+6. Gespeichert wird erst, wenn beide bestätigt haben, das Journal
+   geschrieben ist und das Feld ruhig ist (`GAME_DATA_SaveStart` /
+   `SaveMain`). Vorher liegt das Pokémon noch auf dem alten Platz. Die
+   Ansicht darf bis dahin nicht „fertig“ sagen.
+7. **Cancel** / B vor dem Speichern bewegt nichts. B während des Speicherns
+   rollt nicht zurück.
 
-Koop-Sitzungen tauschen hier nicht. Dort liegt der Spielstand beim Host;
-ein zweiter Tauschweg darüber wäre ein anderes Risiko und ist nicht gebaut.
+Im Koop darf der Tausch-Save nicht ein zweites Mal `SaveStart` aufrufen,
+weil der Host nach einem Schreibvorgang „savenow“ an den Beitretenden
+schickt. Dieses zweite Starten ist genau die Zeile „saving this game (the
+host saved)“. Liegt der Tausch-Save schon, wird das zweite Starten
+verworfen und eine Zeile geloggt. Das ist kein Nachweis, dass ein
+bestimmter Windows-Lauf damit zu Ende gekommen ist.
 
 ## Wenn die Verbindung abreißt
 
@@ -138,7 +171,33 @@ Kopie, wenn die andere Seite ebenfalls behalten hat. Unklar heißt hier
 stehenbleiben.
 
 Ein beschädigtes Journal ändert die Party nicht und blockiert neue Tausche
-bis Acknowledge.
+bis Acknowledge. Diese Fassung bestätigt ein offenes Journal nicht von
+selbst. Eine Zeile `journal on disk ... Not acknowledged` heißt: liegen
+lassen und die Parties im Spiel vergleichen, bevor jemand Acknowledge
+drückt oder denselben Tausch noch einmal anbietet.
+
+### Testkopien vom 8. November 2026, etwa 19:33 Berlin
+
+Auf der alten Fassung `f58ab369` (die laufenden Windows-Prozesse, nicht
+dieser Quelltext) lagen danach zwei Journale à 908 Bytes und zwei
+Save-Dateien (`host.sav` und `multiplayer/session.sav`). Der Join-Prozess
+hing bei „saving this game (the host saved)“ und verbrauchte CPU; der Host
+blieb bedienbar und meldete zweimal „1 to come“. Ob die Parties getauscht
+wurden, ist daraus nicht zu sehen. Die Journalbytes wurden nicht gelesen.
+
+Diese Kopien nicht über einen echten Spielstand legen. Die Prozesse nicht
+von hier aus beenden. Wenn sie noch laufen, im Task-Manager selbst beenden,
+bevor neu gebaut wird. Die Journale nicht löschen und nicht Acknowledge
+geben, solange die beiden Parties nicht im Spiel verglichen sind. Ein
+vorhandenes Journal plus ein geschriebenes Save ist kein abgeschlossener
+Tausch. Die nächste Fassung loggt die Phase ohne Pokémon-Bytes und räumt
+das Journal nicht weg.
+
+Die Ereigniszahl „kind 13“ vor dieser Zeile ist `trainer.spotted` in
+Bytes, nicht in Ereignissen, und lag zeitlich vor dem Speicherlog. Sie ist
+keine festgestellte Ursache. Ein zweites `SaveStart` ist im Quelltext der
+Weg, der zu genau dieser letzten Zeile führt; der Windows-Lauf wurde hier
+nicht wiederholt.
 
 ## Was diese Fassung nicht ist
 
@@ -175,7 +234,12 @@ build\test_session_trade
 
 Die Fälle: gültiger Tausch, Entwicklung aus einer NARC-Zeile und ohne
 erfundene Liste, Abbruch, Abbruch der Verbindung vor dem Save und während
-des Saves, geändertes Angebot, kaputte Bytes, Journal nach Neustart.
+des Saves, geändertes Angebot, kaputte Bytes, Journal nach Neustart,
+Bestätigung ohne freies Save, Save noch nicht fertig, vorauseilendes
+Lock, abgelaufene einseitige Bestätigung, leere Party ohne Lesezugriff,
+und die Sperre gegen ein zweites Koop-Save. `test_trade_invite` prüft
+zusätzlich viele ruhige Frames mit sichtbarem Partner ohne A und ein
+unruhiges Feld.
 
 ## Windows, neben einer laufenden Fassung
 

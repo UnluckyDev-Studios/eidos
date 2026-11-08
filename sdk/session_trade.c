@@ -129,6 +129,10 @@ struct BwSessionTrade {
     Jour disk;
     int have_disk;
     int journal_damaged;
+    int outcome;
+    u32 confirm_wait;
+    u32 confirm_left;
+    int save_wait_logged;
 };
 
 /* ------------------------------------------------------------------ */
@@ -849,8 +853,33 @@ BwSessionTrade *bw_session_trade_create(const BwSessionTradeCfg *cfg)
     }
     t->rng = 0xA5A5A5A5u ^ (cfg->self_peer * 0x9E3779B9u);
     t->phase = BW_STRADE_IDLE;
+    t->confirm_wait = 60u * 60u; /* one minute at the field rate */
     set_status(t, "No session trade.");
     return t;
+}
+
+static const char *phase_name(int phase)
+{
+    switch (phase) {
+    case BW_STRADE_IDLE: return "idle";
+    case BW_STRADE_OPEN_SENT: return "open-sent";
+    case BW_STRADE_OPEN_IN: return "open-in";
+    case BW_STRADE_TALK: return "talk";
+    case BW_STRADE_PREPARED: return "prepared";
+    case BW_STRADE_APPLYING: return "applying";
+    case BW_STRADE_SAVED: return "saved";
+    case BW_STRADE_AWAIT: return "await";
+    case BW_STRADE_UNRESOLVED: return "unresolved";
+    case BW_STRADE_DONE: return "done";
+    case BW_STRADE_CANCELLED: return "cancelled";
+    default: return "other";
+    }
+}
+
+static void log_trade(const BwSessionTrade *t, const char *what)
+{
+    fprintf(stderr, "eidos: trade: %s (phase %s, peer %u)\n",
+            what, phase_name(t->phase), (unsigned)t->partner);
 }
 
 void bw_session_trade_destroy(BwSessionTrade *t)
@@ -999,6 +1028,11 @@ static void finish_idle(BwSessionTrade *t, const char *status)
     clear_offers(t);
     memset(t->tid, 0, sizeof t->tid);
     t->partner = 0;
+    t->confirm_left = 0;
+    t->save_wait_logged = 0;
+    if (t->outcome != BW_STRADE_OUT_BOTH_SAVED) {
+        t->outcome = BW_STRADE_OUT_CANCELLED;
+    }
     t->phase = BW_STRADE_IDLE;
     if (t->have_disk) {
         t->disk.phase = BW_STRADE_IDLE;
@@ -1036,6 +1070,7 @@ void bw_session_trade_recover(BwSessionTrade *t)
     if (journal_load(t) != 0) {
         t->phase = BW_STRADE_UNRESOLVED;
         set_status(t, "Trade journal is damaged. Party was not changed. Acknowledge after you have compared parties.");
+        fprintf(stderr, "eidos: trade: journal damaged. Not acknowledged. Party was not changed.\n");
         return;
     }
     if (!t->have_disk || t->disk.phase == BW_STRADE_IDLE ||
@@ -1049,6 +1084,8 @@ void bw_session_trade_recover(BwSessionTrade *t)
         set_status(t, "No open session trade.");
         return;
     }
+    fprintf(stderr, "eidos: trade: journal on disk (phase %s). Not acknowledged. Compare parties before another trade.\n",
+            phase_name((int)t->disk.phase));
     memcpy(t->tid, t->disk.tid, BW_STRADE_ID_LEN);
     t->partner = t->disk.peer;
     t->slot = t->disk.slot;
@@ -1196,6 +1233,7 @@ int bw_session_trade_start(BwSessionTrade *t, u32 peer)
         set_status(t, "A trade is already open.");
         return -1;
     }
+    t->outcome = 0;
     clear_offers(t);
     t->partner = peer;
     new_tid(t);
@@ -1247,7 +1285,10 @@ int bw_session_trade_offer(BwSessionTrade *t, u32 slot)
     }
     nmon = t->cfg.store.count(t->cfg.store.user);
     if (nmon < 1 || nmon > 6 || slot >= (u32)nmon) {
-        set_status(t, "That party slot cannot be offered.");
+        set_status(t, nmon < 1 ? "No Pokemon to offer." : "That party slot cannot be offered.");
+        if (nmon < 1) {
+            fprintf(stderr, "eidos: trade: no pokemon to offer\n");
+        }
         return -1;
     }
     if (t->cfg.store.read(t->cfg.store.user, slot, mon) != 0 || !mon_ok(t, mon, &info)) {
@@ -1287,6 +1328,10 @@ int bw_session_trade_confirm(BwSessionTrade *t)
     u8 h[BW_STRADE_HASH_LEN];
 
     if (t == NULL || t->phase != BW_STRADE_TALK || !both_ready(t)) {
+        if (t != NULL && t->phase == BW_STRADE_TALK) {
+            set_status(t, "Both players have to offer a Pokemon before confirm.");
+            fprintf(stderr, "eidos: trade: confirm refused, offers are not both ready\n");
+        }
         return -1;
     }
     if (t->cfg.store.read(t->cfg.store.user, t->slot, now) != 0) {
@@ -1310,9 +1355,11 @@ int bw_session_trade_confirm(BwSessionTrade *t)
         t->conf_l = 0;
         return -1;
     }
+    t->confirm_left = t->confirm_wait;
     set_status(t, t->conf_p
-                   ? "Both confirmed. The trade saves when the field is free."
-                   : "You confirmed. Waiting for the other player.");
+                   ? "Both confirmed. The trade saves when the field is free. Not saved yet."
+                   : "You confirmed. Waiting for the other player. Not saved yet.");
+    log_trade(t, t->conf_p ? "both sides confirmed" : "local confirm, waiting");
     return 0;
 }
 
@@ -1341,6 +1388,7 @@ int bw_session_trade_cancel(BwSessionTrade *t)
         return -1;
     }
     send_cancel(t, WHY_USER);
+    t->outcome = BW_STRADE_OUT_CANCELLED;
     if (t->phase == BW_STRADE_PREPARED || t->phase == BW_STRADE_AWAIT) {
         (void)persist(t, BW_STRADE_CANCELLED);
     }
@@ -1365,6 +1413,7 @@ int bw_session_trade_acknowledge(BwSessionTrade *t)
         (void)replace_file(t->cfg.journal_path, prev);
     }
     t->journal_damaged = 0;
+    t->outcome = 0;
     if (t->phase == BW_STRADE_AWAIT) {
         finish_idle(t, "Paused trade dropped. Your party was not changed.");
         return 0;
@@ -1525,6 +1574,8 @@ static void lock_prepare(BwSessionTrade *t)
         return;
     }
     t->phase = BW_STRADE_PREPARED;
+    t->confirm_left = 0;
+    log_trade(t, "journal locked, party not saved");
     if (send_prepared(t) != 0) {
         set_status(t, "Journal saved. The prepared notice could not be sent yet.");
         return;
@@ -1543,14 +1594,18 @@ static int restore_outgoing(BwSessionTrade *t)
 static void mark_done(BwSessionTrade *t)
 {
     (void)persist(t, BW_STRADE_DONE);
-    finish_idle(t, "Trade saved on both sides. Each save is its own; this is not one shared write.");
+    t->outcome = BW_STRADE_OUT_BOTH_SAVED;
+    log_trade(t, "both sides reported a save; not one shared write");
+    finish_idle(t, "Each side reported its own save. This is not one shared write.");
 }
 
 static void mark_unresolved(BwSessionTrade *t, const char *status)
 {
     t->phase = BW_STRADE_UNRESOLVED;
+    t->outcome = 0;
     (void)persist(t, BW_STRADE_UNRESOLVED);
     set_status(t, status);
+    log_trade(t, "unresolved, journal kept, not acknowledged");
 }
 
 static void apply_and_save(BwSessionTrade *t)
@@ -1569,7 +1624,11 @@ static void apply_and_save(BwSessionTrade *t)
     }
     ready = t->cfg.store.save_ready(t->cfg.store.user);
     if (ready == 0) {
-        set_status(t, "Both confirmed. Leave the menu; the trade saves on the field.");
+        set_status(t, "Both confirmed. The save waits until the field is free. Not saved yet.");
+        if (!t->save_wait_logged) {
+            t->save_wait_logged = 1;
+            log_trade(t, "save waiting, party not written");
+        }
         return;
     }
     if (ready < 0) {
@@ -1622,6 +1681,7 @@ static void apply_and_save(BwSessionTrade *t)
     }
     t->phase = BW_STRADE_APPLYING;
     t->save_started = 1;
+    log_trade(t, "party updated, save not finished");
     if (t->cfg.store.save_begin(t->cfg.store.user) != 0) {
         t->save_started = 0;
         if (restore_outgoing(t) == 0) {
@@ -1633,12 +1693,52 @@ static void apply_and_save(BwSessionTrade *t)
     }
 }
 
+void bw_session_trade_set_confirm_wait(BwSessionTrade *t, u32 frames)
+{
+    if (t == NULL) {
+        return;
+    }
+    t->confirm_wait = frames;
+    t->confirm_left = 0;
+}
+
+int bw_session_trade_may_mp_save(int trade_saving, int settle, int mp_saving,
+                                int *drop_wanted)
+{
+    if (drop_wanted != NULL) {
+        *drop_wanted = 0;
+    }
+    if (trade_saving || settle > 0 || mp_saving) {
+        if (drop_wanted != NULL) {
+            *drop_wanted = 1;
+        }
+        return 0;
+    }
+    return 1;
+}
+
 void bw_session_trade_poll(BwSessionTrade *t)
 {
     int pr;
 
     if (t == NULL) {
         return;
+    }
+    /* One player confirmed and the other has not.  After the wait, close
+     * the talk.  A locked journal is left alone: expiring it would look
+     * like a decision about a save that may already be in progress. */
+    if (t->phase == BW_STRADE_TALK && t->confirm_wait > 0u && !t->peer_prepared &&
+        ((t->conf_l && !t->conf_p) || (!t->conf_l && t->conf_p))) {
+        if (t->confirm_left == 0u) {
+            t->confirm_left = t->confirm_wait;
+        } else if (--t->confirm_left == 0u) {
+            send_cancel(t, WHY_USER);
+            log_trade(t, "confirm wait ended, nothing moved");
+            finish_idle(t, "The confirm wait ended before both confirmed. Nothing moved.");
+            return;
+        }
+    } else {
+        t->confirm_left = 0;
     }
     if (t->phase == BW_STRADE_TALK && t->conf_l && t->conf_p && !t->peer_prepared) {
         /* Lock locally once.  The partner's PREPARED may already be in. */
@@ -1674,6 +1774,7 @@ void bw_session_trade_poll(BwSessionTrade *t)
         return;
     }
     t->phase = BW_STRADE_SAVED;
+    log_trade(t, "local save finished, partner save not known");
     if (persist(t, BW_STRADE_SAVED) != 0) {
         mark_unresolved(t, "The save finished but the journal could not record it.");
         return;
@@ -1790,13 +1891,20 @@ void bw_session_trade_on_message(BwSessionTrade *t, u32 from, const void *data, 
             set_status(t, "Ignored a prepared notice for a different offer.");
             break;
         }
-        if (!(t->conf_l && t->conf_p) && t->phase == BW_STRADE_TALK) {
-            send_cancel(t, WHY_STALE);
-            finish_idle(t, "The partner locked before both confirms. Nothing moved.");
+            /* Same bytes.  Their lock can arrive before our confirm flag if
+         * the notices were reordered.  That is not a reason to cancel.
+         * The party is still untouched until this side locks and saves. */
+        if (!t->have_local || !t->have_peer) {
+            set_status(t, "Ignored a prepared notice before both offers.");
             break;
         }
         t->peer_prepared = 1;
-        set_status(t, "The partner locked the same Pokemon.");
+        if (t->conf_l && t->conf_p) {
+            set_status(t, "The partner locked the same Pokemon. Not saved yet.");
+        } else {
+            set_status(t, "The partner locked these bytes. Confirm them here. Not saved yet.");
+        }
+        log_trade(t, "partner locked the same bytes");
         break;
     case MSG_SAVED:
         if (n != HDR + BW_STRADE_HASH_LEN * 2u) {
@@ -1938,6 +2046,77 @@ void bw_session_trade_resume(BwSessionTrade *t, u32 peer)
     memcpy(buf + HDR + 4, t->hash_l, BW_STRADE_HASH_LEN);
     memcpy(buf + HDR + 4 + BW_STRADE_HASH_LEN, t->hash_p, BW_STRADE_HASH_LEN);
     (void)send_raw(t, buf, sizeof buf);
+}
+
+int bw_session_trade_slot_info(const BwSessionTrade *t, u32 slot, BwTradeInspect *out)
+{
+    u8 mon[BW_STRADE_MON_SIZE];
+    int n;
+
+    if (out != NULL) {
+        memset(out, 0, sizeof *out);
+        out->reason = BW_STRADE_BAD_ARG;
+    }
+    if (t == NULL || out == NULL || t->cfg.store.count == NULL || t->cfg.store.read == NULL) {
+        return -1;
+    }
+    n = t->cfg.store.count(t->cfg.store.user);
+    if (n < 1 || slot >= (u32)n) {
+        return -1;
+    }
+    if (t->cfg.store.read(t->cfg.store.user, slot, mon) != 0) {
+        return -1;
+    }
+    bw_session_trade_predict(mon, NULL, &t->cfg.limits, t->evos, t->nevo,
+                             t->cfg.hold_effect, t->cfg.hold_user, out);
+    return 0;
+}
+
+int bw_session_trade_face(const BwSessionTrade *t, BwTradeFace *out)
+{
+    if (out == NULL) {
+        return -1;
+    }
+    memset(out, 0, sizeof *out);
+    out->slot = -1;
+    out->party_n = -1;
+    if (t == NULL) {
+        return -1;
+    }
+    out->phase = t->phase;
+    out->have_local = t->have_local;
+    out->have_peer = t->have_peer;
+    out->conf_local = t->conf_l;
+    out->conf_peer = t->conf_p;
+    out->peer_locked = t->peer_prepared;
+    out->peer_saved = t->peer_saved;
+    out->outcome = t->outcome;
+    out->slot = t->have_local ? (int)t->slot : -1;
+    if (t->cfg.store.count != NULL) {
+        out->party_n = t->cfg.store.count(t->cfg.store.user);
+    }
+    if (t->have_local) {
+        bw_session_trade_predict(t->local_mon, NULL, &t->cfg.limits, t->evos, t->nevo,
+                                 t->cfg.hold_effect, t->cfg.hold_user, &out->local_info);
+    }
+    if (t->have_peer) {
+        bw_session_trade_predict(t->peer_mon, t->have_local ? t->local_mon : NULL,
+                                 &t->cfg.limits, t->evos, t->nevo,
+                                 t->cfg.hold_effect, t->cfg.hold_user, &out->peer_info);
+    }
+    return 0;
+}
+
+int bw_session_trade_outcome(const BwSessionTrade *t)
+{
+    return t != NULL ? t->outcome : 0;
+}
+
+void bw_session_trade_clear_outcome(BwSessionTrade *t)
+{
+    if (t != NULL) {
+        t->outcome = 0;
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -2137,5 +2316,5 @@ int bw_session_trade_ui_activate(int index)
 
 const char *bw_session_trade_ui_help(void)
 {
-    return "Session trade, not the DS wireless trade. A confirms the exact offer. B leaves this list. Nothing is saved until both have confirmed and the field is free.";
+    return "Session trade, not the DS wireless trade. The field picture is the trade screen. A confirms the exact offer. Nothing is saved until both have confirmed and this side's save has finished. A finished line is still not one shared write.";
 }

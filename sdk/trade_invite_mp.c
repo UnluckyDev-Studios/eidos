@@ -111,13 +111,17 @@ void bw_trade_invite_mp_frame(u64 now_ms)
     look.a_edge = (edge & BW_KEY_A) != 0;
     look.accept_edge = look.a_edge;
     look.decline_edge = (edge & BW_KEY_B) != 0;
-    if (look.have_self) {
+    /* A load is still rebuilding avatars, or the field is not the quiet
+     * field: do not treat a cell as a partner. */
+    if (look.have_self && look.field_quiet && bw_mp_avatars_ready()) {
         bw_trade_face_cell(x, z, dir, &fx, &fz);
         look.partner = bw_mp_partner_at(fx, fz);
     }
-    trade = bw_session_trade_link_engine();
-    look.trade_busy = trade != NULL && bw_session_trade_blocked(trade) &&
-                      bw_session_trade_phase(trade) != BW_STRADE_IDLE;
+    /* Do not create the trade engine here.  Idle co-op only looks at
+     * cells.  The engine appears when an invitation is accepted or the
+     * player opens the trade screen. */
+    trade = bw_session_trade_link_current();
+    look.trade_busy = trade != NULL && bw_session_trade_blocked(trade);
     (void)bw_trade_invite_consider(t, &look, now_ms);
 }
 

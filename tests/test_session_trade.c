@@ -31,6 +31,7 @@ typedef struct Party {
     int left;        /* polls still to wait; 0 means idle                  */
     int fail;        /* the next save fails                                */
     int writes;
+    int reads;
 } Party;
 
 typedef struct Pipe {
@@ -53,6 +54,7 @@ static int p_read(void *user, u32 slot, u8 out[MON])
     if (slot >= (u32)p->count) {
         return -1;
     }
+    p->reads++;
     memcpy(out, p->mem[slot], MON);
     return 0;
 }
@@ -122,6 +124,25 @@ static void pipe_flush(Pipe *pipe)
     for (i = 0; i < n; i++) {
         bw_session_trade_on_message(pipe->dest, pipe->from, pipe->buf[i], pipe->len[i]);
     }
+}
+
+/* Deliver only messages of `kind` and keep the others queued. */
+static void pipe_deliver_kind(Pipe *pipe, u8 kind)
+{
+    int i, w = 0;
+
+    for (i = 0; i < pipe->n; i++) {
+        if (pipe->buf[i][0] == kind) {
+            bw_session_trade_on_message(pipe->dest, pipe->from, pipe->buf[i], pipe->len[i]);
+        } else {
+            if (w != i) {
+                memcpy(pipe->buf[w], pipe->buf[i], pipe->len[i]);
+                pipe->len[w] = pipe->len[i];
+            }
+            w++;
+        }
+    }
+    pipe->n = w;
 }
 
 static void reload(Party *p)
@@ -852,13 +873,149 @@ static int test_narc_and_pair(void)
     return 0;
 }
 
+static int test_confirm_and_empty(void)
+{
+    Party pa, pb;
+    Pipe ab, ba;
+    BwSessionTrade *a, *b;
+    BwTradeFace face;
+    BwTradeInspect slot;
+    int drop = 0;
+    const char *ja = "/tmp/eidos-trade-cf-a/journal.bin";
+    const char *jb = "/tmp/eidos-trade-cf-b/journal.bin";
+    u16 kept;
+
+    printf("confirm, save gate, empty party\n");
+    rm_journal(ja);
+    rm_journal(jb);
+    BW_CHECK_EQ("mp save blocked while trade saves",
+                bw_session_trade_may_mp_save(1, 0, 0, &drop), 0);
+    BW_CHECK_EQ("drop the extra savenow", drop, 1);
+    drop = 0;
+    BW_CHECK_EQ("mp save blocked while settling",
+                bw_session_trade_may_mp_save(0, 180, 0, &drop), 0);
+    BW_CHECK_EQ("drop while settling", drop, 1);
+    drop = 0;
+    BW_CHECK_EQ("mp save blocked while mp saves",
+                bw_session_trade_may_mp_save(0, 0, 1, &drop), 0);
+    drop = 0;
+    BW_CHECK_EQ("mp save allowed when idle",
+                bw_session_trade_may_mp_save(0, 0, 0, &drop), 1);
+    BW_CHECK_EQ("do not drop a real savenow", drop, 0);
+
+    party_init(&pa, 25, 1);
+    party_init(&pb, 133, 4);
+    pa.ready = 0;
+    pb.ready = 0;
+    kept = 25;
+    a = open_peer(&pa, &ab, 1, 11, ja, NULL, 0, 1, 0);
+    b = open_peer(&pb, &ba, 2, 12, jb, NULL, 0, 1, 0);
+    bind_pipes(&ab, &ba, a, b);
+    BW_REQUIRE("open", trade_open(a, b, &ab, &ba) == 0);
+    BW_CHECK_EQ("offer", bw_session_trade_offer(a, 0) == 0 && bw_session_trade_offer(b, 0) == 0, 1);
+    pipe_flush(&ab);
+    pipe_flush(&ba);
+    pa.reads = pb.reads = 0;
+    BW_CHECK_EQ("confirm a", bw_session_trade_confirm(a), 0);
+    BW_CHECK_EQ("confirm b", bw_session_trade_confirm(b), 0);
+    pump(a, b, &ab, &ba, 4);
+    BW_CHECK_EQ("locked, not saved", bw_session_trade_phase(a), BW_STRADE_PREPARED);
+    BW_CHECK_EQ("peer locked too", bw_session_trade_phase(b), BW_STRADE_PREPARED);
+    BW_CHECK_EQ("menu does not write", pa.writes == 0 && pb.writes == 0, 1);
+    BW_CHECK_EQ("party untouched", species_of(pa.mem[0]), kept);
+    BW_CHECK_EQ("face", bw_session_trade_face(a, &face), 0);
+    BW_CHECK_EQ("not complete while waiting", face.outcome, BW_STRADE_OUT_NONE);
+    BW_CHECK_EQ("face says prepared", face.phase, BW_STRADE_PREPARED);
+    pa.ready = pb.ready = 1;
+    pa.delay = pb.delay = 5;
+    pump(a, b, &ab, &ba, 1);
+    BW_CHECK_EQ("save in progress", bw_session_trade_phase(a), BW_STRADE_APPLYING);
+    BW_CHECK_EQ("still not both saved", bw_session_trade_outcome(a), BW_STRADE_OUT_NONE);
+    BW_CHECK_EQ("disk not claimed early", pa.writes, 0);
+    pump(a, b, &ab, &ba, 12);
+    BW_CHECK_EQ("back to idle", bw_session_trade_phase(a), BW_STRADE_IDLE);
+    BW_CHECK_EQ("both reported", bw_session_trade_outcome(a), BW_STRADE_OUT_BOTH_SAVED);
+    BW_CHECK_EQ("swapped", species_of(pa.mem[0]), 133);
+    bw_session_trade_clear_outcome(a);
+    BW_CHECK_EQ("outcome cleared", bw_session_trade_outcome(a), 0);
+
+    /* A prepared notice that overtakes the confirm must not cancel. */
+    rm_journal(ja);
+    rm_journal(jb);
+    party_init(&pa, 25, 1);
+    party_init(&pb, 133, 4);
+    pa.ready = pb.ready = 0;
+    bw_session_trade_destroy(a);
+    bw_session_trade_destroy(b);
+    a = open_peer(&pa, &ab, 1, 21, ja, NULL, 0, 1, 0);
+    b = open_peer(&pb, &ba, 2, 22, jb, NULL, 0, 1, 0);
+    bind_pipes(&ab, &ba, a, b);
+    BW_REQUIRE("open2", trade_open(a, b, &ab, &ba) == 0);
+    BW_CHECK_EQ("offers2", bw_session_trade_offer(a, 0) == 0 && bw_session_trade_offer(b, 0) == 0, 1);
+    pipe_flush(&ab);
+    pipe_flush(&ba);
+    BW_CHECK_EQ("a confirms", bw_session_trade_confirm(a), 0);
+    BW_CHECK_EQ("b confirms", bw_session_trade_confirm(b), 0);
+    pipe_flush(&ba);                 /* A learns B confirmed */
+    bw_session_trade_poll(a);        /* A locks and queues PREPARED, confirm still queued */
+    pipe_deliver_kind(&ab, 7);       /* B sees the lock before A's confirm */
+    BW_CHECK_EQ("b not cancelled", bw_session_trade_phase(b), BW_STRADE_TALK);
+    BW_CHECK_EQ("b saw the lock", bw_session_trade_face(b, &face) == 0 && face.peer_locked, 1);
+    pipe_flush(&ab);
+    bw_session_trade_poll(b);
+    BW_CHECK_EQ("b locks after its confirm arrives", bw_session_trade_phase(b), BW_STRADE_PREPARED);
+    BW_CHECK_EQ("still no write", pb.writes, 0);
+
+    /* One-sided confirm expires.  A locked journal does not. */
+    bw_session_trade_set_confirm_wait(a, 2);
+    bw_session_trade_cancel(a);
+    pipe_flush(&ab);
+    bw_session_trade_set_confirm_wait(a, 2);
+    bw_session_trade_set_confirm_wait(b, 2);
+    BW_REQUIRE("open3", trade_open(a, b, &ab, &ba) == 0);
+    BW_CHECK_EQ("offer only a", bw_session_trade_offer(a, 0), 0);
+    pipe_flush(&ab);
+    BW_CHECK_EQ("b offers", bw_session_trade_offer(b, 0), 0);
+    pipe_flush(&ba);
+    BW_CHECK_EQ("only a confirms", bw_session_trade_confirm(a), 0);
+    bw_session_trade_poll(a);
+    BW_CHECK_EQ("still waiting", bw_session_trade_phase(a), BW_STRADE_TALK);
+    bw_session_trade_poll(a);
+    BW_CHECK_EQ("wait ended", bw_session_trade_phase(a), BW_STRADE_IDLE);
+    BW_CHECK_EQ("nothing moved", species_of(pa.mem[0]), 25);
+
+    /* Empty party: no slot read, no journal pokemon, offer fails. */
+    bw_session_trade_destroy(a);
+    bw_session_trade_destroy(b);
+    rm_journal(ja);
+    party_init(&pa, 25, 1);
+    pa.count = 0;
+    pa.reads = 0;
+    a = open_peer(&pa, &ab, 1, 31, ja, NULL, 0, 1, 0);
+    b = open_peer(&pb, &ba, 2, 32, jb, NULL, 0, 1, 0);
+    bind_pipes(&ab, &ba, a, b);
+    BW_REQUIRE("open empty", trade_open(a, b, &ab, &ba) == 0);
+    pa.reads = 0;
+    BW_CHECK_EQ("empty offer", bw_session_trade_offer(a, 0), -1);
+    BW_CHECK_EQ("empty did not read", pa.reads, 0);
+    BW_CHECK_EQ("empty slot", bw_session_trade_slot_info(a, 0, &slot), -1);
+    BW_CHECK_EQ("still no read", pa.reads, 0);
+    BW_CHECK_EQ("face empty", bw_session_trade_face(a, &face) == 0 && face.party_n == 0, 1);
+    BW_CHECK_EQ("confirm empty", bw_session_trade_confirm(a), -1);
+    BW_CHECK_EQ("phase stays talk", bw_session_trade_phase(a), BW_STRADE_TALK);
+
+    bw_session_trade_destroy(a);
+    bw_session_trade_destroy(b);
+    return 0;
+}
+
 int main(void)
 {
 #if !defined(_WIN32)
     (void)system("mkdir -p /tmp/eidos-trade-a /tmp/eidos-trade-b /tmp/eidos-trade-evo-a "
                  "/tmp/eidos-trade-evo-b /tmp/eidos-trade-can-a /tmp/eidos-trade-can-b "
                  "/tmp/eidos-trade-bad-a /tmp/eidos-trade-bad-b /tmp/eidos-trade-rec-a "
-                 "/tmp/eidos-trade-rec-b");
+                 "/tmp/eidos-trade-rec-b /tmp/eidos-trade-cf-a /tmp/eidos-trade-cf-b");
 #else
     (void)_mkdir("/tmp");
 #endif
@@ -869,6 +1026,7 @@ int main(void)
     test_changed_and_malformed();
     test_recovery();
     test_narc_and_pair();
+    test_confirm_and_empty();
     BW_REPORT("test_session_trade");
     return bw_failures == 0 ? 0 : 1;
 }

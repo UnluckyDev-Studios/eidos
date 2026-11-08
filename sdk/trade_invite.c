@@ -126,6 +126,7 @@ static int begin_out(BwTradeInvite *t, u32 peer, u64 now)
     t->until = now + t->cfg.timeout_ms;
     t->entered = 0;
     set_status(t, "Tausch angeboten. Warte auf Antwort.");
+    fprintf(stderr, "eidos: trade: invitation to player %u\n", peer);
     return 0;
 }
 

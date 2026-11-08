@@ -7,7 +7,8 @@ Each release's notes on GitHub start with its section here
 
 ### Link
 - **Session trade:** On a private Link session, two players can offer one party Pokemon each, inspect the partner's record, and both confirm those exact bytes before either save changes. This is not a DS Union Room trade. A dropped connection before the save leaves the party alone; a save that already finished is not rolled back. See `docs/session-trade.md`.
-- **Trade invite:** In co-op, facing a visible partner and pressing A sends a trade invitation when no event is already running. The other player accepts or declines. Accepting opens the same trade; it does not swap anything by itself. The Network menu entry remains.
+- **Trade invite:** In co-op, facing a visible partner and pressing A sends a trade invitation when no event is already running. The other player accepts or declines. Accepting opens the same trade; it does not swap anything by itself. The Network menu entry remains. Idle co-op does not open the trade engine or the evolution file just because an avatar is visible.
+- **Trade screen:** After the invitation, the field shows both parties' offers (species, level, item, and a local party icon when `a/0/0/7` is already on disk). Confirm does not mean saved. A second co-op save is not started while the trade save owns `SaveStart`. An open journal is not acknowledged automatically. Co-op still keeps each player's save on the host; this is not one shared write.
 
 ## 0.2.4
 

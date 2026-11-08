@@ -119,10 +119,17 @@ static int st_read(void *user, u32 slot, u8 out[BW_STRADE_MON_SIZE])
 {
     void *party;
     void *mon;
+    int n;
 
     (void)user;
+    /* An empty party has no record to read.  GetMember would still return
+     * the first slot of a zero count, and that slot is not a Pokemon. */
+    n = st_count(NULL);
+    if (n < 1 || slot >= (u32)n || out == NULL || POKEPARTY_GetMember == NULL) {
+        return -1;
+    }
     party = party_of();
-    if (party == NULL || POKEPARTY_GetMember == NULL || out == NULL) {
+    if (party == NULL) {
         return -1;
     }
     mon = POKEPARTY_GetMember(party, slot);
@@ -137,10 +144,15 @@ static int st_write(void *user, u32 slot, const u8 mon[BW_STRADE_MON_SIZE])
 {
     void *party;
     void *dst;
+    int n;
 
     (void)user;
+    n = st_count(NULL);
+    if (n < 1 || slot >= (u32)n || mon == NULL || POKEPARTY_GetMember == NULL) {
+        return -1;
+    }
     party = party_of();
-    if (party == NULL || POKEPARTY_GetMember == NULL || mon == NULL) {
+    if (party == NULL) {
         return -1;
     }
     dst = POKEPARTY_GetMember(party, slot);
@@ -157,6 +169,10 @@ static int st_ready(void *user)
     if (GAME_DATA_SaveStart == NULL || GAME_DATA_SaveMain == NULL) {
         return -1;
     }
+    /* The co-op save driver must not be inside the same calls. */
+    if (bw_mp_save_busy()) {
+        return 0;
+    }
     return field_quiet() ? 1 : 0;
 }
 
@@ -168,7 +184,8 @@ static int st_begin(void *user)
     if (g_saving || GAME_DATA_SaveStart == NULL) {
         return -1;
     }
-    if (!field_quiet()) {
+    if (!field_quiet() || bw_mp_save_busy()) {
+        fprintf(stderr, "eidos: trade: save not started; the field is busy or a save is already running\n");
         return -1;
     }
     gd = game_data();
@@ -177,6 +194,8 @@ static int st_begin(void *user)
     }
     g_save_gd = gd;
     g_saving = 1;
+    bw_mp_trade_save(1);
+    fprintf(stderr, "eidos: trade: save started\n");
     (void)GAME_DATA_SaveStart(gd);
     return 0;
 }
@@ -184,23 +203,31 @@ static int st_begin(void *user)
 static int st_poll(void *user)
 {
     int r;
+    static unsigned still;
 
     (void)user;
     if (!g_saving) {
+        still = 0;
         return 1;
     }
     if (GAME_DATA_SaveMain == NULL || g_save_gd == NULL) {
         g_saving = 0;
+        bw_mp_trade_save(0);
+        fprintf(stderr, "eidos: trade: save ended without a result. Not a completed trade.\n");
         return -1;
     }
     r = GAME_DATA_SaveMain(g_save_gd);
-    if (r == 2) {
+    if (r == 2 || r == 3) {
         g_saving = 0;
-        return 1;
+        still = 0;
+        bw_mp_trade_save(0);
+        fprintf(stderr, "eidos: trade: local save %s. Not a completed two-sided trade.\n",
+                r == 2 ? "finished" : "failed");
+        return r == 2 ? 1 : -1;
     }
-    if (r == 3) {
-        g_saving = 0;
-        return -1;
+    if (++still == 120u) {
+        still = 0;
+        fprintf(stderr, "eidos: trade: save still running\n");
     }
     return 0;
 }
@@ -358,8 +385,13 @@ static int ensure(void)
     if (g_trade == NULL) {
         return -1;
     }
+    if (!g_handler) {
+        bw_mod_net_set_trade_handler(on_net);
+        g_handler = 1;
+    }
     load_narc(g_trade);
     bw_session_trade_recover(g_trade);
+    fprintf(stderr, "eidos: trade: session trade ready\n");
     return 0;
 }
 
@@ -412,9 +444,14 @@ void bw_session_trade_link_detach(void)
     }
 }
 
+BwSessionTrade *bw_session_trade_link_current(void)
+{
+    return g_trade;
+}
+
 BwSessionTrade *bw_session_trade_link_engine(void)
 {
-    if (bw_session_trade_screen_ok()) {
+    if (bw_session_trade_screen_ok() || g_auto_accept) {
         (void)ensure();
     }
     return g_trade;
@@ -422,7 +459,12 @@ BwSessionTrade *bw_session_trade_link_engine(void)
 
 void bw_session_trade_link_frame(void)
 {
-    int live = bw_session_trade_screen_ok();
+    /* A private Link keeps its engine.  Co-op does not create one merely
+     * because a partner avatar is on the field: that work (the evolution
+     * file, the trade channel) starts when an invitation is accepted or
+     * the player opens the trade screen. */
+    int link = bw_session_trade_link_available();
+    int live = link || (g_trade != NULL && bw_mp_can_trade()) || g_auto_accept;
 
     if (g_saving && g_trade != NULL) {
         bw_session_trade_poll(g_trade);
@@ -433,21 +475,25 @@ void bw_session_trade_link_frame(void)
         return;
     }
     if (!live) {
-        if (g_handler) {
+        if (g_handler && g_trade == NULL) {
             bw_mod_net_set_trade_handler(NULL);
             g_handler = 0;
         }
-        if (g_trade != NULL && bw_session_trade_blocked(g_trade)) {
+        if (g_trade != NULL && !bw_mp_can_trade() &&
+            bw_session_trade_blocked(g_trade)) {
             bw_session_trade_on_disconnect(g_trade);
         }
+        return;
+    }
+    if (link && ensure() != 0) {
+        return;
+    }
+    if (g_trade == NULL) {
         return;
     }
     if (!g_handler) {
         bw_mod_net_set_trade_handler(on_net);
         g_handler = 1;
-    }
-    if (ensure() != 0) {
-        return;
     }
     if (g_auto_accept && bw_session_trade_phase(g_trade) == BW_STRADE_OPEN_IN) {
         if (bw_session_trade_accept(g_trade) == 0) {
@@ -455,9 +501,9 @@ void bw_session_trade_link_frame(void)
         }
     }
     /* The peer list here is the private Link's.  Co-op names its partner
-     * when the invitation is accepted, and a third Link peer still aborts
-     * an unlocked trade. */
-    if (bw_session_trade_link_available()) {
+     * when the invitation is accepted.  A Link that is not exactly two
+     * players still aborts an unlocked trade. */
+    if (link) {
         if (g_npeers == 1u) {
             bw_session_trade_note_peer(g_trade, g_peers[0]);
             bw_session_trade_resume(g_trade, g_peers[0]);
