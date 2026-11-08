@@ -28,6 +28,14 @@ BwSessionTrade *bw_session_trade_link_engine(void);
 /* 1 when a private Link session is open (not co-op, not the public air). */
 int bw_session_trade_link_available(void);
 
+/* 1 when the trade screen may open: a private Link, or a running co-op
+ * game.  The menu entry uses this.  The in-world invitation uses co-op. */
+int bw_session_trade_screen_ok(void);
+
+/* The next incoming trade open is the one both players just agreed to.
+ * It is accepted once.  Offers are still chosen by hand. */
+void bw_session_trade_link_arm_accept(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -41,6 +41,7 @@
 #include <string.h>
 
 #include "mp.h"
+#include "trade_invite.h"
 #include "mod_loader.h"
 #include "mod_net.h"
 #include "plat_dir.h"
@@ -2189,6 +2190,7 @@ extern void bw_mod_avatar_set_game_data(void *game_data) BW_MP_WEAK;
 
 static void *field_running(void);
 static void *field_present(void);
+static void *field_quiet_game_data(void);
 
 static s16 cell_of(s32 v)
 {
@@ -2430,6 +2432,69 @@ int bw_mp_peer_visible(u32 peer)
     return pos_visible(peer);
 }
 
+int bw_mp_can_trade(void)
+{
+    if (bw_mp_paused()) {
+        return 0;
+    }
+    return g_mp.in_game &&
+           (g_mp.state == BW_MP_PLAYING || g_mp.state == BW_MP_GRACE);
+}
+
+int bw_mp_field_quiet(void)
+{
+    return field_quiet_game_data() != NULL;
+}
+
+int bw_mp_self_cell(u16 *zone, s16 *x, s16 *z, u8 *dir)
+{
+    if (!g_me.have || field_quiet_game_data() == NULL) {
+        return -1;
+    }
+    if (zone != NULL) {
+        *zone = g_me.zone;
+    }
+    if (x != NULL) {
+        *x = g_me.x;
+    }
+    if (z != NULL) {
+        *z = g_me.z;
+    }
+    if (dir != NULL) {
+        *dir = g_me.dir;
+    }
+    return 0;
+}
+
+u32 bw_mp_partner_at(s16 x, s16 z)
+{
+    u32 i;
+
+    if (!g_me.have) {
+        return 0;
+    }
+    for (i = 0; i < BW_MP_PLAYERS_MAX; i++) {
+        BwMpPos *p = &g_pos[i];
+        s16 ax, ay, az;
+        u32 peer = i + 1u;
+
+        if (p->avatar == 0 || !p->have || p->zone != g_me.zone || !pos_visible(peer)) {
+            continue;
+        }
+        ax = p->x;
+        az = p->z;
+        if (bw_mod_avatar_pos != NULL &&
+            bw_mod_avatar_pos(p->avatar, &ax, &ay, &az) != 0) {
+            ax = p->x;
+            az = p->z;
+        }
+        if (ax == x && az == z) {
+            return peer;
+        }
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* The network's events                                                */
 /* ------------------------------------------------------------------ */
@@ -2457,6 +2522,12 @@ void bw_mp_on_net(u32 peer, int kind, const void *buf, u32 size)
     }
     if (kind == (int)BW_SESSION_LEAVE) {
         pos_forget(peer);
+        bw_trade_invite_mp_on_leave(peer);
+    }
+    if (kind == (int)BW_SESSION_MESSAGE && size >= 4 &&
+        memcmp(buf, "ti1 ", 4) == 0) {
+        bw_trade_invite_mp_on_line(peer, (const char *)buf, size);
+        return;
     }
     if (kind == (int)BW_SESSION_MESSAGE && size > 4 && memcmp(buf, "pos ", 4) == 0) {
         /* a player's place, from any player */
@@ -3016,6 +3087,7 @@ void bw_mp_frame_at(u64 t)
     if (g_mp.in_game && (g_mp.state == BW_MP_PLAYING || g_mp.state == BW_MP_GRACE)) {
         pos_frame();
         events_frame();
+        bw_trade_invite_mp_frame(g_mp.now_ms);
     }
     if (g_mp.saving && GAME_DATA_SaveMain != NULL) {
         int r = GAME_DATA_SaveMain(g_mp.save_gd);

@@ -192,6 +192,21 @@ void bw_mp_request_save_for_test(void);
  * not this game's own player.  Exposed for the tests. */
 int  bw_mp_peer_visible(u32 peer);
 
+/* 1 while a co-op game is running (not the lobby, not paused).  The
+ * session trade may be opened from a visible avatar only then. */
+int  bw_mp_can_trade(void);
+
+/* 1 when the field is up and no event is running. */
+int  bw_mp_field_quiet(void);
+
+/* This player's cell and facing, when the field is quiet.  0, or -1. */
+int  bw_mp_self_cell(u16 *zone, s16 *x, s16 *z, u8 *dir);
+
+/* The visible partner standing on (x,z) in this zone, or 0.  The cell is
+ * the avatar's, so a partner who is only remembered and not drawn does
+ * not count. */
+u32  bw_mp_partner_at(s16 x, s16 z);
+
 /* The save delta a joiner uploads (tests): see sdk/mp.c. */
 int  bw_mp_delta_test(const u8 *base, const u8 *now, u32 size, u32 *dsize, int *bad_ok);
 

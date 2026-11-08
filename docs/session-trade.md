@@ -60,6 +60,43 @@ Entwicklung ist eine lokale Folge der eigenen NARC-Datei. Zwei Spieler mit
 verschiedenen Daten können deshalb verschiedene Arten erhalten. Die Zeile
 der anderen Seite zeigt, was **diese** Seite daraus machen würde.
 
+## Ansprechen im Mehrspieler
+
+Die Figur des anderen Spielers ist ein Avatar ohne Skript
+(`sdk/mod_avatar.h`). Der normale Ansprech-Knopf des Spiels startet damit
+kein Gespräch: die Prüfung in `field_event_check.c` handelt nur, wenn das
+Modell davor eine Zonenskript-Nummer hat. Der Avatar hat keine.
+
+Dieselbe Taste A zählt danach noch einmal, und nur dann:
+
+- Koop läuft (nicht die Lobby, nicht die Pause, nicht die öffentliche Luft).
+- Das Feld ist ruhig: kein Ereignis, also kein NPC-Gespräch, kein Schild,
+  kein Menü, keine Story, kein Kampf.
+- Der Spieler schaut auf das Nachbarfeld. Die Richtung ist die des Spiels:
+  0 ein Feld in -z, 1 in +z, 2 in -x, 3 in +x (`FLDMMDL_MOVE_AddDirVector`).
+- Auf diesem Feld steht der gezeichnete Avatar, nicht nur eine gemerkte
+  Position.
+
+Dann geht eine Einladung nur an diesen Peer (`ti1`). Die andere Seite sieht
+„Tausch annehmen?“ mit Ja und Nein (Klick oder A und B). Ablehnen, Abbruch,
+Weggehen und 15 Sekunden ohne Antwort beenden die Einladung. Zwei
+gleichzeitige Einladungen: die kleinere Peer-Nummer bleibt, die andere wird
+abgelehnt. Eine alte Nummer wird ignoriert.
+
+Ja öffnet den bestehenden Tausch. Angebote und die doppelte Bestätigung
+bleiben. Es wird nichts getauscht, nur weil jemand Ja gesagt hat.
+
+Die Zeile Einstellungen → Netzwerk → Session trade bleibt, für die private
+Link-Sitzung und als Weg im Koop, wenn das Feld keine Einladung zeigt.
+
+Koop und private Link sind zwei Sitzungsarten auf demselben Relay. Der
+Avatar gibt es im Koop. Die Einladung läuft über die Koop-Nachrichten
+(`eidos:port`), der Tausch danach über `eidos:trade` in derselben Sitzung.
+Der Spielstand im Koop bleibt der bisherige: der Host hält die Dateien, der
+Beitretende lädt seinen Save hoch. Das Journal und die Bestätigung der
+Bytes gelten weiter. Ein gemeinsamer atomarer Schreibvorgang entsteht
+dadurch nicht.
+
 ## Ablauf für zwei Spieler
 
 1. Metaxy lokal starten. Kein öffentlicher Relay, kein Upload von ROMs

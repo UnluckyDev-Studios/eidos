@@ -53,6 +53,8 @@ static int g_saving;
 static u32 g_peers[ST_PEERS];
 static u32 g_npeers;
 static int g_attached;
+static int g_handler;
+static int g_auto_accept;
 
 static void *game_data(void)
 {
@@ -374,9 +376,20 @@ int bw_session_trade_link_available(void)
     return 1;
 }
 
+int bw_session_trade_screen_ok(void)
+{
+    return bw_session_trade_link_available() || bw_mp_can_trade();
+}
+
+void bw_session_trade_link_arm_accept(void)
+{
+    g_auto_accept = 1;
+}
+
 void bw_session_trade_link_attach(void)
 {
     g_attached = 1;
+    g_handler = 1;
     bw_mod_net_set_trade_handler(on_net);
     (void)ensure();
 }
@@ -384,6 +397,8 @@ void bw_session_trade_link_attach(void)
 void bw_session_trade_link_detach(void)
 {
     g_attached = 0;
+    g_handler = 0;
+    g_auto_accept = 0;
     bw_mod_net_set_trade_handler(NULL);
     g_npeers = 0;
     if (g_trade != NULL) {
@@ -399,43 +414,59 @@ void bw_session_trade_link_detach(void)
 
 BwSessionTrade *bw_session_trade_link_engine(void)
 {
-    if (!bw_session_trade_link_available()) {
-        return g_trade;
+    if (bw_session_trade_screen_ok()) {
+        (void)ensure();
     }
-    (void)ensure();
     return g_trade;
 }
 
 void bw_session_trade_link_frame(void)
 {
+    int live = bw_session_trade_screen_ok();
+
     if (g_saving && g_trade != NULL) {
         bw_session_trade_poll(g_trade);
-        if (!g_saving && !bw_session_trade_link_available()) {
+        if (!g_saving && !live) {
             bw_session_trade_destroy(g_trade);
             g_trade = NULL;
         }
         return;
     }
-    if (!g_attached && !bw_session_trade_link_available()) {
-        return;
-    }
-    if (!bw_session_trade_link_available()) {
+    if (!live) {
+        if (g_handler) {
+            bw_mod_net_set_trade_handler(NULL);
+            g_handler = 0;
+        }
         if (g_trade != NULL && bw_session_trade_blocked(g_trade)) {
             bw_session_trade_on_disconnect(g_trade);
         }
         return;
     }
+    if (!g_handler) {
+        bw_mod_net_set_trade_handler(on_net);
+        g_handler = 1;
+    }
     if (ensure() != 0) {
         return;
     }
-    if (g_npeers == 1u) {
-        bw_session_trade_note_peer(g_trade, g_peers[0]);
-        bw_session_trade_resume(g_trade, g_peers[0]);
-    } else if (g_npeers != 1u && bw_session_trade_blocked(g_trade) &&
-               bw_session_trade_phase(g_trade) != BW_STRADE_AWAIT &&
-               bw_session_trade_phase(g_trade) != BW_STRADE_UNRESOLVED &&
-               bw_session_trade_phase(g_trade) != BW_STRADE_APPLYING) {
-        bw_session_trade_on_disconnect(g_trade);
+    if (g_auto_accept && bw_session_trade_phase(g_trade) == BW_STRADE_OPEN_IN) {
+        if (bw_session_trade_accept(g_trade) == 0) {
+            g_auto_accept = 0;
+        }
+    }
+    /* The peer list here is the private Link's.  Co-op names its partner
+     * when the invitation is accepted, and a third Link peer still aborts
+     * an unlocked trade. */
+    if (bw_session_trade_link_available()) {
+        if (g_npeers == 1u) {
+            bw_session_trade_note_peer(g_trade, g_peers[0]);
+            bw_session_trade_resume(g_trade, g_peers[0]);
+        } else if (g_npeers != 1u && bw_session_trade_blocked(g_trade) &&
+                   bw_session_trade_phase(g_trade) != BW_STRADE_AWAIT &&
+                   bw_session_trade_phase(g_trade) != BW_STRADE_UNRESOLVED &&
+                   bw_session_trade_phase(g_trade) != BW_STRADE_APPLYING) {
+            bw_session_trade_on_disconnect(g_trade);
+        }
     }
     bw_session_trade_poll(g_trade);
 }

@@ -1876,6 +1876,15 @@ void bw_session_trade_on_disconnect(BwSessionTrade *t)
     if (t == NULL) {
         return;
     }
+    /* A second notice (the frame, after the session is already gone) must
+     * not restart the wait or clear a resume that was just sent. */
+    if (t->peer_left && (t->phase == BW_STRADE_AWAIT ||
+                         t->phase == BW_STRADE_UNRESOLVED ||
+                         t->phase == BW_STRADE_APPLYING ||
+                         t->phase == BW_STRADE_SAVED ||
+                         t->phase == BW_STRADE_IDLE)) {
+        return;
+    }
     t->peer_left = 1;
     t->peer_prepared = 0;
     t->peer_saved = 0;

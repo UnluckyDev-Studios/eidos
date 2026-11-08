@@ -527,7 +527,7 @@ static void build_net_rows(void)
     add_row(ROW_NET_RELAY_PORT, 0, 0);
     add_row(ROW_NET_CONTROL_PORT, 0, 0);
     add_row(ROW_INJECT_MAX, 0, 0);
-    if (bw_session_trade_link_available()) {
+    if (bw_session_trade_screen_ok()) {
         add_row(ROW_NET_TRADE, 0, 0);
     }
     add_row(ROW_NET_DEFAULTS, 0, 0);

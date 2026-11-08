@@ -43,6 +43,9 @@
 
 #include "ui.h"
 #include "kit.h"
+#include "trade_invite.h"
+#include "session_trade.h"
+#include "session_trade_link.h"
 #include "plat_thread.h"
 #include "port.h"
 #include "dsmem.h"
@@ -55,6 +58,7 @@
 #define WEAK __attribute__((weak))
 
 static int small_button(EidosUiCtx *c, int *x, int y, const char *label, int h, const char *key);
+static void trade_invite_panel(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch);
 static int small_button_w(const char *label, const char *key);
 struct FieldNow;
 static int choices_now(const struct FieldNow *f, u8 **list, u8 **win);
@@ -2278,6 +2282,83 @@ static void field_run(EidosUiCtx *c, EidosUiView *view, const EidosUiFrame *in)
     }
     if (use_item) {
         eidos_ui_press(BW_KEY_Y, 10);
+    }
+    trade_invite_panel(c, in, cw, ch);
+}
+
+/* The invitation and, after it is accepted, the same trade rows the
+ * Network screen shows.  Drawn only while one is waiting, so the field
+ * is unchanged otherwise. */
+static void trade_invite_panel(EidosUiCtx *c, const EidosUiFrame *in, int cw, int ch)
+{
+    const char *prompt = bw_trade_invite_live_prompt();
+    const char *status = bw_trade_invite_live_status();
+    int show_trade = bw_trade_invite_live_wants_screen();
+    int x, y, w, h, i, n;
+    char label[64], value[96];
+
+    (void)in;
+    if (prompt == NULL && !show_trade && (status == NULL || status[0] == '\0')) {
+        return;
+    }
+    w = cw > 280 ? 260 : cw - 16;
+    x = (cw - w) / 2;
+    y = ch / 2 - 36;
+    if (prompt == NULL && !show_trade) {
+        if (bw_trade_invite_live_phase() == BW_TINV_OUT &&
+            status != NULL && status[0] != '\0') {
+            ui_panel(c, x, y, w, 28, UI_CUT_TL | UI_CUT_BR, 6, UI_BODY, UI_EDGE, 220);
+            ui_text(c, x + 8, y + 6, status, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        }
+        return;
+    }
+    if (prompt != NULL) {
+        EidosUiRect yes, no;
+
+        h = 72;
+        ui_panel(c, x, y, w, h, UI_CUT_TL | UI_CUT_BR, 6, UI_BODY, UI_EDGE, 230);
+        ui_text(c, x + 10, y + 8, prompt, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        ui_text(c, x + 10, y + 24, "Ja", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        ui_text(c, x + w / 2, y + 24, "Nein", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        yes.x = x + 8;
+        yes.y = y + 22;
+        yes.w = w / 2 - 12;
+        yes.h = 22;
+        no.x = x + w / 2;
+        no.y = yes.y;
+        no.w = yes.w;
+        no.h = yes.h;
+        if (eidos_ui_hit(yes) & EIDOS_UI_CLICK) {
+            bw_trade_invite_live_accept();
+        } else if (eidos_ui_hit(no) & EIDOS_UI_CLICK) {
+            bw_trade_invite_live_decline();
+        }
+        return;
+    }
+    if (!show_trade) {
+        return;
+    }
+    bw_session_trade_ui_bind(bw_session_trade_link_engine());
+    n = bw_session_trade_ui_rows();
+    if (n > 6) {
+        n = 6;
+    }
+    h = 18 + n * 16;
+    ui_panel(c, x, y, w, h, UI_CUT_TL | UI_CUT_BR, 6, UI_BODY, UI_EDGE, 230);
+    ui_text(c, x + 8, y + 4, "Tausch", UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+    for (i = 0; i < n; i++) {
+        EidosUiRect row;
+
+        bw_session_trade_ui_row(i, label, (int)sizeof label, value, (int)sizeof value);
+        ui_text(c, x + 8, y + 18 + i * 16, label, UI_WHITE, UI_EDGE, UI_FONT_SMALL, 1);
+        ui_text(c, x + 88, y + 18 + i * 16, value, UI_LIGHT, UI_EDGE, UI_FONT_SMALL, 1);
+        row.x = x + 4;
+        row.y = y + 16 + i * 16;
+        row.w = w - 8;
+        row.h = 16;
+        if (eidos_ui_hit(row) & EIDOS_UI_CLICK) {
+            (void)bw_session_trade_ui_activate(i);
+        }
     }
 }
 
